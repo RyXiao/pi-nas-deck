@@ -1,0 +1,21 @@
+services:
+  pi-nas-deck:
+    image: pi-nas-deck:latest
+    build: .
+    container_name: pi-nas-deck
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # 首次启动的管理密码（留空则随机生成并打印到日志；登录后可在设置页修改）
+      - INITIAL_PASSWORD=${INITIAL_PASSWORD:-}
+      # 国内网络：pi 在线更新走 npmmirror
+      - NPM_INSTALL_REGISTRY=${NPM_INSTALL_REGISTRY:-https://registry.npmmirror.com}
+    volumes:
+      # 应用数据 + pi 配置/会话（持久卷）
+      - pnd-data:/data
+      # 项目目录：把 NAS 共享文件夹挂到 /workspace 下
+      # 示例：把 "媒体/文档" 共享文件夹挂进来
+      - /volume1/workspace:/workspace
+volumes:
+  pnd-data:
