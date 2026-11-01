@@ -35,6 +35,7 @@ export class Scheduler {
         name: t.name,
         projectId: t.projectId,
         schedule: t.schedule,
+        model: t.model || null,
         prompt: t.prompt,
         outputDir: t.outputDir,
         enabled: !!t.enabled,
@@ -105,6 +106,10 @@ export class Scheduler {
       // 每次运行开新会话：日报互不污染上下文
       const { key, state } = await this.deps.sessions.open(task.projectId, null, `${task.name} ${date}`);
       const proc = this.deps.sessions.get(key);
+      // 指定模型（峰谷价差择优）：会话级 set_model，失败则任务报错而不是静默用错模型
+      if (task.model?.provider && task.model?.id) {
+        await proc.request({ type: "set_model", provider: task.model.provider, modelId: task.model.id }, 15_000);
+      }
       const settled = waitForSettled(proc, RUN_TIMEOUT_MS);
       await proc.request({ type: "prompt", message: task.prompt }, 15_000);
       const outcome = await settled;
@@ -218,6 +223,14 @@ export function validateTask(input, sessions) {
   let outputDir = String(input?.outputDir || "定时任务").trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
   if (outputDir.split("/").some((seg) => seg === ".." || !seg)) throw new Error("输出目录不合法");
   if (outputDir.length > OUTPUT_DIR_MAX) throw new Error("输出目录过长");
+  // 指定模型（可选）：{provider, id}，来自 models.json；缺省 = 会话当前模型
+  let model = null;
+  if (input?.model) {
+    const provider = String(input.model.provider || "").trim();
+    const id = String(input.model.id || "").trim();
+    if (!provider || !id || provider.length > 200 || id.length > 200) throw new Error("模型参数不合法");
+    model = { provider, id };
+  }
   return {
     id: String(input?.id || "") || undefined,
     name,
@@ -225,6 +238,7 @@ export function validateTask(input, sessions) {
     prompt,
     schedule,
     outputDir: outputDir || "定时任务",
+    model,
     enabled: input?.enabled !== false,
   };
 }

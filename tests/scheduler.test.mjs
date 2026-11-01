@@ -72,6 +72,10 @@ assert(t.schedule.kind === "weekday" && t.schedule.time === "18:30", "工作日�
 t = validateTask({ name: "月报", projectId: "p1", prompt: "x", schedule: { kind: "monthly", day: 1, time: "09:00" } }, fakeSessions);
 assert(t.schedule.kind === "monthly" && t.schedule.day === 1 && t.schedule.time === "09:00", "月报任务");
 
+t = validateTask({ name: "谷电任务", projectId: "p1", prompt: "x", schedule: { kind: "daily", time: "02:00" }, model: { provider: "cheap", id: "night-model" } }, fakeSessions);
+assert(t.model?.provider === "cheap" && t.model.id === "night-model", "指定模型（谷电择优）");
+assert(validateTask({ name: "无模型", projectId: "p1", prompt: "x", schedule: { kind: "daily", time: "02:00" } }, fakeSessions).model === null, "缺省模型为 null");
+
 const rejects = [
   [{ name: "", projectId: "p1", prompt: "x" }, "缺任务名"],
   [{ name: "t", projectId: "不存在", prompt: "x" }, "无效项目"],
@@ -82,6 +86,8 @@ const rejects = [
   [{ name: "t", projectId: "p1", prompt: "x", schedule: { kind: "monthly", day: 1 } }, "月报缺时间"],
   [{ name: "t", projectId: "p1", prompt: "x", outputDir: "../escape" }, "目录穿越"],
   [{ name: "t", projectId: "p1", prompt: "x", outputDir: "a//b" }, "非法目录段"],
+  [{ name: "t", projectId: "p1", prompt: "x", model: { provider: "", id: "m" } }, "模型缺 provider"],
+  [{ name: "t", projectId: "p1", prompt: "x", model: { provider: "p", id: "" } }, "模型缺 id"],
 ];
 for (const [input, label] of rejects) {
   let threw = false;

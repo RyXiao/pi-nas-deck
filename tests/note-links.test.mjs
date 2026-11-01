@@ -60,4 +60,16 @@ assert(html.includes('id="tab-bar"') && app.includes("renderTabBar") && app.incl
 assert(app.includes('e.button === 1') && app.includes("restoreTabs") && app.includes('setItem("pnd-tabs"'), "中键关闭 + 刷新恢复在位");
 assert(!app.includes("state.noteHistory") && !app.includes("previewReturn"), "历史已迁移到每标签（旧全局引用清零）");
 
+// 11. v0.4.3：定时任务模型 / txt·json 编辑 / 选择题（文件握手）
+assert(app.includes("modelSel"), "定时任务表单含模型选择");
+const schedSrc = readFileSync(join(import.meta.dirname, "..", "server", "lib", "scheduler.js"), "utf8");
+assert(schedSrc.includes("set_model") && schedSrc.includes("task.model") && schedSrc.includes("model = { provider, id }"), "定时任务模型校验+执行前 set_model 完整");
+assert(server.includes("\\.(md|markdown|txt|json)$") && app.includes("isEditable"), "编辑白名单含 txt/json");
+const askExt = readFileSync(join(import.meta.dirname, "..", "extensions", "ask-choice", "index.ts"), "utf8");
+assert(askExt.includes("ask_user_choice") && askExt.includes(".pnd-ask"), "选择题扩展存在且用文件握手");
+assert(app.includes("renderAskCard") && app.includes("finalizeAskCard") && app.includes(".answer.json"), "网页端选择题卡片完整");
+// v0.4.3 修：模型选项值不得再用 NUL 分隔（innerHTML 解析会吞掉 NUL → id 为空 → 校验失败）
+assert(app.includes("modelChoices[Number(modelSel.value)]"), "模型选项用数组下标（非 NUL 分隔）");
+assert(!app.includes("escapeHtml(pname)}\\u0000"), "无 NUL 分隔的选项构建残留");
+
 console.log("\nNOTE-LINK SOURCE GUARDS PASSED");

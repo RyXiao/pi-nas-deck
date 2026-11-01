@@ -510,6 +510,15 @@ pre.log {
 }
 .wiki-picker-item { padding: 6px 8px; font-size: 13px; font-family: var(--mono); border-radius: 4px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wiki-picker-item:hover { background: var(--bg3); }
+/* 选择题卡片（ask-choice 扩展） */
+.ask-card { border-left: 3px solid var(--accent); padding-left: 10px; }
+.ask-card .role { color: var(--accent); font-weight: 600; }
+.ask-card.answered .role { color: var(--ok); }
+.ask-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; align-items: center; }
+button.ask-option { padding: 8px 14px; background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-size: 13px; }
+button.ask-option:hover:not(:disabled) { border-color: var(--accent); color: var(--fg); }
+button.ask-option:disabled { opacity: .5; cursor: default; }
+input.ask-other { width: 170px; flex: 0 0 auto; }
 .md-body { max-width: 860px; line-height: 1.7; }
 .md-body img { max-width: 100%; }
 .md-body table { border-collapse: collapse; }

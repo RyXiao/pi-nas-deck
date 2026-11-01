@@ -625,13 +625,15 @@ function handleEvent(record) {
       if (record.message?.role === "assistant") finalizeAssistant();
       break;
     case "tool_execution_start":
-      renderToolEvent(record, "running");
+      if (record.toolName === "ask_user_choice" && record.args?.question) renderAskCard(record);
+      else renderToolEvent(record, "running");
       break;
     case "tool_execution_update":
-      renderToolEvent(record, "running");
+      if (record.toolName !== "ask_user_choice") renderToolEvent(record, "running");
       break;
     case "tool_execution_end":
-      renderToolEvent(record, record.isError ? "fail" : "done");
+      if (record.toolName === "ask_user_choice") finalizeAskCard(record);
+      else renderToolEvent(record, record.isError ? "fail" : "done");
       break;
     case "session_info_changed":
       if (record.name) {
@@ -765,6 +767,65 @@ function appendTurnFooter(msg) {
 function fmtDuration(ms) {
   const s = Math.round(ms / 1000);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`;
+}
+
+// ---- 选择题卡片（ask-choice 扩展的网页端；文件握手回答） ----
+// 模型调 ask_user_choice 工具 → 事件带问题/选项 → 渲染按钮 → 点击后经文件 API
+// 写 .pnd-ask/<toolCallId>.answer.json → 扩展轮询读到即返回给模型继续。
+function renderAskCard(record) {
+  const id = record.toolCallId;
+  if ($("messages").querySelector(`[data-ask="${CSS.escape(id)}"]`)) return;
+  const args = record.args || {};
+  const card = el("div", "msg ask-card");
+  card.dataset.ask = id;
+  card.append(el("div", "role", "❓ 等待你的选择"));
+  card.append(el("div", "content", args.question || "（缺少问题）"));
+  const row = el("div", "ask-options");
+  const finish = async (answer) => {
+    row.querySelectorAll("button, input").forEach((b) => (b.disabled = true));
+    card.classList.add("answered");
+    card.querySelector(".role").textContent = `✅ 已选择：${answer}`;
+    try {
+      await api("/api/fs/file", {
+        method: "PUT",
+        body: JSON.stringify({
+          project: state.activeProject?.id,
+          path: `.pnd-ask/${id}.answer.json`,
+          content: JSON.stringify({ answer, at: Date.now() }),
+        }),
+      });
+    } catch (error) {
+      toast(`回答提交失败：${error.message}`, true);
+    }
+  };
+  for (const opt of args.options || []) {
+    const btn = el("button", "ask-option", opt);
+    btn.onclick = () => void finish(opt);
+    row.append(btn);
+  }
+  if (args.allowOther ?? args.allow_other) {
+    const input = el("input", "ask-other");
+    input.placeholder = "其它答案…";
+    const ok = el("button", "ask-option", "确认");
+    ok.onclick = () => {
+      if (input.value.trim()) void finish(input.value.trim());
+    };
+    row.append(input, ok);
+  }
+  card.append(row);
+  $("messages").append(card);
+  scrollBottom();
+}
+
+function finalizeAskCard(record) {
+  const card = $("messages").querySelector(`[data-ask="${CSS.escape(record.toolCallId)}"]`);
+  if (!card) return;
+  card.querySelectorAll("button, input").forEach((b) => (b.disabled = true));
+  if (!card.classList.contains("answered")) {
+    card.classList.add("answered");
+    card.querySelector(".role").textContent = "⏳ 超时未回答，模型将按默认判断继续";
+  }
+  scrollBottom();
 }
 
 function renderToolEvent(record, status) {
@@ -1605,7 +1666,7 @@ async function renderSkillsTab(body) {
 // 到点在指定项目开新会话执行 prompt，产出存为项目内 md（默认 定时任务/ 目录）；
 // 配合文件树时间倒序，新日报自动置顶。设置页仅创建/启停/立即执行/删除（编辑=删了重建）。
 async function renderSchedulerTab(body) {
-  const [data, projects] = await Promise.all([api("/api/scheduler"), api("/api/projects")]);
+  const [data, projects, modelsCfg] = await Promise.all([api("/api/scheduler"), api("/api/projects"), api("/api/models")]);
   let tasks = data.tasks || [];
   const panel = el("div", "panel");
   panel.append(el("p", "hint", "到点在指定项目开一个新会话执行提示词（每次新会话，互不污染上下文），产出保存为项目内的 Markdown。时间按服务器时区解释（设置 → 系统页可查）。配合文件树「时间倒序」（面板顶部 ⏱），新日报自动置顶。"));
@@ -1634,7 +1695,7 @@ async function renderSchedulerTab(body) {
             : task.schedule.kind === "monthly"
               ? `每月 ${task.schedule.day} 日 ${task.schedule.time}`
               : `每天 ${task.schedule.time}`;
-      card.append(el("p", "hint", `${schedText} · 项目：${project?.name || "（项目已删除）"} · 产出：${task.outputDir}/${task.name}-YYYY-MM-DD.md`));
+      card.append(el("p", "hint", `${schedText} · 项目：${project?.name || "（项目已删除）"} · 模型：${task.model ? `${task.model.id}（${task.model.provider}）` : "默认"} · 产出：${task.outputDir}/${task.name}-YYYY-MM-DD.md`));
       card.append(el("p", "hint", `上次：${fmtTime(task.lastRunAt)}${task.lastResult?.rel ? ` → ${task.lastResult.rel}` : ""}${task.lastError ? ` · 错误：${task.lastError}` : ""}｜下次：${task.enabled ? fmtTime(task.nextRunAt) : "—"}`));
       const row = el("div", "row");
       const editBtn = el("button", "", "✏️ 编辑");
@@ -1687,6 +1748,22 @@ async function renderSchedulerTab(body) {
   nameInput.placeholder = "任务名（也是产出文件名，如：日报）";
   const projectSel = el("select", "");
   projectSel.innerHTML = projects.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("") || '<option value="">（先去添加项目）</option>';
+  // 指定模型（峰谷价差择优）：选项来自 models.json；value 用数组下标。
+  // 勿用 NUL 分隔符：innerHTML 构建的选项值经 HTML 解析会丢掉 NUL，split 后 id 为空
+  // （v0.4.3 实测 bug：选非默认模型报「模型参数不合法」）。
+  const modelChoices = [];
+  const modelSel = el("select", "");
+  {
+    const opts = ['<option value="">默认（会话当前模型）</option>'];
+    for (const [pname, prov] of Object.entries(modelsCfg.providers || {})) {
+      for (const m of prov.models || []) {
+        if (!m.id) continue;
+        modelChoices.push({ provider: pname, id: m.id });
+        opts.push(`<option value="${modelChoices.length - 1}">${escapeHtml(m.name || m.id)} · ${escapeHtml(pname)}/${escapeHtml(m.id)}</option>`);
+      }
+    }
+    modelSel.innerHTML = opts.join("");
+  }
   const kindSel = el("select", "");
   kindSel.innerHTML = `<option value="daily">每天</option><option value="weekday">工作日（周一至周五）</option><option value="monthly">每月指定日（月报）</option><option value="interval">间隔（分钟）</option>`;
   const timeInput = el("input", "");
@@ -1759,6 +1836,7 @@ async function renderSchedulerTab(body) {
                   : { kind: "daily", time: timeInput.value },
           prompt: promptArea.value.trim(),
           outputDir: dirInput.value.trim() || "定时任务",
+          model: modelSel.value !== "" ? modelChoices[Number(modelSel.value)] || null : null,
           enabled: existing ? existing.enabled : true, // 编辑保留原启停状态
         }),
       });
@@ -1778,6 +1856,7 @@ async function renderSchedulerTab(body) {
     nameInput.value = "";
     promptArea.value = "";
     dirInput.value = "";
+    modelSel.value = "";
     kindSel.value = "daily";
     kindSel.onchange();
     timeInput.value = "18:00";
@@ -1792,6 +1871,10 @@ async function renderSchedulerTab(body) {
     cancelBtn.classList.remove("hidden");
     nameInput.value = task.name;
     projectSel.value = task.projectId;
+    if (task.model) {
+      const idx = modelChoices.findIndex((c) => c.provider === task.model.provider && c.id === task.model.id);
+      modelSel.value = idx >= 0 ? String(idx) : ""; // 模型已从 models.json 删除则回退默认
+    }
     kindSel.value = task.schedule.kind;
     kindSel.onchange(); // 联动显示对应输入框
     if (task.schedule.kind === "interval") minutesInput.value = task.schedule.minutes;
@@ -1805,7 +1888,7 @@ async function renderSchedulerTab(body) {
     nameInput.focus();
   }
 
-  form.append(nameInput, projectSel, kindSel, schedRow, promptArea, dirInput, addBtn, cancelBtn);
+  form.append(nameInput, projectSel, modelSel, kindSel, schedRow, promptArea, dirInput, addBtn, cancelBtn);
   panel.append(form);
   body.innerHTML = "";
   body.append(panel);
@@ -2594,7 +2677,8 @@ function renderFilePreview() {
   // 笔记导航/编辑按钮（仅 md；历史按钮按可用性置灰）
   $("note-back-btn").classList.toggle("hidden", !isMd);
   $("note-forward-btn").classList.toggle("hidden", !isMd);
-  $("note-edit-btn").classList.toggle("hidden", !isMd);
+  const isEditable = /\.(md|markdown|txt|json)$/i.test(data.path);
+  $("note-edit-btn").classList.toggle("hidden", !isEditable);
   const isPdfFile = /\.pdf$/i.test(data.path);
   $("pdf-convert-btn").classList.toggle("hidden", !isPdfFile);
   const isHtmlFile = /\.html?$/i.test(data.path);
@@ -3020,6 +3104,7 @@ async function saveNoteEdit() {
 }
 
 async function updateWikiPicker(editor) {
+  if (!preview?.md) return closeWikiPicker(); // [[ 插链仅 md；txt/json 编辑不弹
   const pos = editor.selectionStart;
   const before = editor.value.slice(0, pos);
   const open = before.lastIndexOf("[[");

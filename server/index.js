@@ -556,7 +556,7 @@ const routes = [
     const project = sessions.getProject(String(body?.project || ""));
     if (!project) return { status: 404, json: { error: "项目不存在" } };
     const rel = normalizeRelPath(String(body?.path || ""));
-    if (!rel || !/\.(md|markdown|txt)$/i.test(rel)) return { status: 400, json: { error: "仅支持 .md/.txt 文件" } };
+    if (!rel || !/\.(md|markdown|txt|json)$/i.test(rel)) return { status: 400, json: { error: "仅支持 .md/.txt/.json 文件" } };
     if (typeof body?.content !== "string") return { status: 400, json: { error: "缺少 content" } };
     if (Buffer.byteLength(body.content, "utf8") > 10 * 1024 * 1024) return { status: 400, json: { error: "内容超过 10MB 上限" } };
     const target = safeProjectPath(project.path, rel);
