@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PiNasDeck</title>
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem("pnd-theme")||"dark";}catch(e){}</script>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🥧</text></svg>">
+</head>
+<body>
+  <!-- 登录 -->
+  <div id="login-view" class="hidden">
+    <div class="login-card">
+      <h1>🥧 PiNasDeck</h1>
+      <p class="muted">pi Agent · NAS 工作台</p>
+      <input id="login-password" type="password" placeholder="管理密码" autocomplete="current-password">
+      <button id="login-btn" class="primary">登录</button>
+      <p id="login-error" class="error"></p>
+    </div>
+  </div>
+
+  <!-- 主界面 -->
+  <div id="main-view" class="hidden">
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <span class="logo">🥧 PiNasDeck</span>
+        <div class="header-actions">
+          <button id="theme-btn" class="icon-btn" title="切换白天/夜间模式">🌞</button>
+          <button id="fs-toggle-btn" class="icon-btn" title="文件树">📁</button>
+          <button id="settings-btn" class="icon-btn" title="设置">⚙️</button>
+        </div>
+      </div>
+      <button id="new-chat-btn" class="primary block">＋ 新会话</button>
+      <div id="search-box">
+        <input id="search-input" placeholder="🔍 搜索会话内容…" autocomplete="off">
+        <div id="search-results" class="hidden"></div>
+      </div>
+      <div id="project-list"></div>
+      <div id="app-version" class="hint"></div>
+    </aside>
+
+    <main id="content">
+      <!-- Chrome 式标签栏：文件标签 + 工作区标签（≥1 个文件标签时显示） -->
+      <div id="tab-bar" class="hidden"></div>
+      <!-- 聊天视图 -->
+      <section id="chat-view" class="hidden">
+        <header id="chat-header">
+          <span id="chat-title">新会话</span>
+          <div class="chat-header-actions">
+            <select id="model-select" title="切换模型" class="hidden"></select>
+            <span id="context-badge" class="badge" title="上下文用量"></span>
+            <button id="abort-btn" class="danger hidden">■ 停止</button>
+          </div>
+        </header>
+        <div id="messages"></div>
+        <footer id="composer">
+          <div id="cmd-menu" class="hidden"></div>
+          <div id="quick-menu" class="hidden"></div>
+          <div id="attachments" class="hidden"></div>
+          <div class="composer-row">
+            <button id="attach-btn" class="composer-btn" title="添加附件（图片直接内联，其他文件上传给 agent 读取）">📎 附件</button>
+            <button id="skills-btn" class="composer-btn" title="插入 Skill（点击选择，直接填入 /命令）">⚡ Skill</button>
+            <button id="mcp-btn" class="composer-btn" title="引用 MCP（点击选择服务器）">🔌 MCP</button>
+            <textarea id="input" placeholder="输入消息… (Enter 发送，Shift+Enter 换行，可拖入文件)" rows="2"></textarea>
+            <button id="send-btn" class="primary">发送</button>
+          </div>
+          <input type="file" id="file-input" multiple hidden>
+        </footer>
+      </section>
+
+      <!-- 欢迎视图 -->
+      <section id="welcome-view" class="center-view">
+        <div>
+          <h2>欢迎使用 PiNasDeck</h2>
+          <p class="muted">左侧选择项目和会话，或点「＋ 新会话」开始。<br>先到 ⚙️ 设置里配置模型 API 和微信。</p>
+        </div>
+      </section>
+
+      <!-- 设置视图 -->
+      <section id="settings-view" class="hidden">
+        <header id="settings-header"><span>设置</span></header>
+        <nav id="settings-tabs">
+          <button data-tab="models" class="active">模型 / API</button>
+          <button data-tab="usage">用量</button>
+          <button data-tab="mcp">MCP</button>
+          <button data-tab="skills">Skills</button>
+          <button data-tab="scheduler">⏰ 定时</button>
+          <button data-tab="wechat">微信</button>
+          <button data-tab="system">系统 / 更新</button>
+          <button data-tab="security">密码</button>
+        </nav>
+        <div id="settings-body"></div>
+      </section>
+
+      <!-- 文件预览视图 -->
+      <section id="file-view" class="hidden">
+        <header id="file-header">
+          <span id="file-title">文件</span>
+          <div class="chat-header-actions">
+            <span id="file-meta" class="badge"></span>
+            <button id="note-back-btn" class="icon-btn hidden" title="后退">⬅</button>
+            <button id="note-forward-btn" class="icon-btn hidden" title="前进">➡</button>
+            <button id="note-edit-btn" class="icon-btn hidden" title="编辑（Ctrl+S 保存，[[ 插入笔记链接）">✎ 编辑</button>
+            <button id="html-scripts-btn" class="icon-btn hidden" title="允许此页面运行脚本（仍在隔离沙箱，拿不到登录态）">▶ 脚本</button>
+            <button id="pdf-convert-btn" class="icon-btn hidden" title="零 token 转为 Markdown 文本（服务端提取，缓存复用）">⤵MD</button>
+            <button id="file-md-btn" class="icon-btn hidden" title="切换 Markdown 渲染">Md</button>
+            <button id="file-copy-btn" class="icon-btn" title="复制内容">⧉</button>
+            <button id="file-download-btn" class="icon-btn" title="下载">⬇</button>
+            <button id="file-close-btn" class="icon-btn" title="关闭预览">✕</button>
+          </div>
+        </header>
+        <div id="file-banner" class="hidden"></div>
+        <div id="file-content"></div>
+      </section>
+    </main>
+
+    <!-- 右侧文件树面板（PiDeck 式）：常驻屏幕右缘，点文件在主区预览，树不消失 -->
+    <aside id="fs-panel" class="hidden">
+      <div class="fs-panel-header">
+        <select id="fs-panel-project-select" title="选择项目"></select>
+        <div class="header-actions">
+          <button id="fs-upload-btn" class="icon-btn" title="上传文件到当前选中目录（点目录行选中，默认根目录）">📤</button>
+          <button id="fs-upload-dir-btn" class="icon-btn" title="上传文件夹到当前选中目录（保留内部结构）">📂</button>
+          <button id="fs-sort-btn" class="icon-btn" title="排序：名称 / 时间倒序（新文件置顶）">🔤</button>
+          <button id="fs-panel-refresh" class="icon-btn" title="刷新">⟳</button>
+          <button id="fs-panel-close" class="icon-btn" title="关闭">✕</button>
+        </div>
+      </div>
+      <div id="fs-panel-tree"></div>
+    </aside>
+  </div>
+
+  <input type="file" id="fs-upload-input" multiple hidden>
+  <input type="file" id="fs-upload-dir-input" multiple webkitdirectory hidden>
+
+  <div id="toast" class="hidden"></div>
+
+  <!-- 上传进度卡：多文件/文件夹上传时常驻右下角，可取消 -->
+  <div id="upload-progress" class="hidden">
+    <div class="upload-progress-head">
+      <span id="upload-progress-title">上传中…</span>
+      <button id="upload-cancel-btn" class="icon-btn" title="取消上传（已传完的文件保留）">⏹ 取消</button>
+    </div>
+    <div class="upload-bar"><div id="upload-bar-fill"></div></div>
+    <div id="upload-progress-text" class="hint"></div>
+    <div id="upload-progress-current" class="hint"></div>
+  </div>
+
+  <!-- 移动端（≤768px）：浮动导航/文件树按钮 + 遮罩，侧栏与右树变抽屉 -->
+  <button id="mobile-nav-btn" class="mobile-only" title="打开菜单">☰</button>
+  <button id="mobile-fs-btn" class="mobile-only" title="文件树">📁</button>
+  <div id="mobile-backdrop" class="hidden"></div>
+
+  <script src="/vendor/marked.min.js"></script>
+  <script src="/vendor/purify.min.js"></script>
+  <script src="/note-utils.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

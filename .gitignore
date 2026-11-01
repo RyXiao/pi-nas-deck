@@ -1,0 +1,16 @@
+# 依赖与运行时数据（绝不入库）
+node_modules/
+test-data/
+test-workspace/
+*.tar.gz
+server.log
+server.pid
+req.json
+.env
+
+# 编辑器/系统
+.DS_Store
+*.swp
+
+# Python
+__pycache__/

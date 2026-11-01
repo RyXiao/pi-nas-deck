@@ -1,0 +1,14 @@
+{
+  "name": "pi-nas-deck",
+  "version": "0.4.2",
+  "private": true,
+  "type": "module",
+  "description": "Web workbench for pi agent: projects, chat, models, WeChat iLink bridge",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.0"
+  }
+}
