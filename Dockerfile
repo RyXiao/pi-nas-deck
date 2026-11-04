@@ -11,10 +11,10 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends bash git ripgrep ca-certificates tini python3 python3-pip python3-venv \
   && rm -rf /var/lib/apt/lists/*
 
-# 全局安装 pi CLI。PI_VERSION 可在构建时指定以锁定版本：
-#   docker build --build-arg PI_VERSION=1.4.0 -t pi-nas-deck .
+# 全局安装 pi CLI。默认锁定 1.5.0（与 RPC/扩展 UI 协议冒烟一致）；
+# 可 --build-arg PI_VERSION=x.y.z 覆盖，或 PI_VERSION=latest 跟最新。
 # NPM_REGISTRY 默认走 npmmirror（国内稳定）；想用官方源：--build-arg NPM_REGISTRY=https://registry.npmjs.org
-ARG PI_VERSION=latest
+ARG PI_VERSION=1.5.0
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 # 构建时间由 upgrade.sh 传入（docker build --build-arg BUILD_DATE=…），显示在设置→系统页
 ARG BUILD_DATE=unknown

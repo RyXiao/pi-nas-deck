@@ -232,6 +232,13 @@ pre code { background: transparent; padding: 0; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 本轮产出文件列表（挂在分割行下，可点开） */
+.turn-outputs { max-width: 880px; margin: -6px auto 14px; padding: 8px 10px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); }
+.output-file { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.output-file:hover { background: var(--bg3); }
+.output-file .of-name { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.output-file .sub { margin-left: auto; flex-shrink: 0; }
+.turn-outputs-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .msg.error .content { color: var(--danger); white-space: pre-wrap; }
 .tool-chip {
   display: inline-flex;

@@ -122,6 +122,13 @@ export class PiProcess extends EventEmitter {
     });
   }
 
+  /** 单向写入（不等响应）：extension_ui_response 等 stdin 消息。 */
+  send(command) {
+    if (this.closed) return false;
+    this.child.stdin.write(`${JSON.stringify(command)}\n`);
+    return true;
+  }
+
   kill() {
     if (this.closed) return;
     try {

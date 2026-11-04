@@ -50,7 +50,8 @@
   <img>/<iframe> 发不了 header），content-type 白名单；docx 走 lib/docx.js 零依赖 zip 读取
   提取正文（≤50MB，store/deflate 两种条目），.doc/.xls/.ppt 返回 legacy-office 提示转新格式。
   笔记库：/api/fs/md-index（全部 .md 清单，跳过点开头目录，≤5000）、
-  /api/fs/backlinks（入链扫描，≤300 文件/10s 预算，行号+摘要）、PUT /api/fs/file
+  /api/fs/backlinks（入链扫描，≤300 文件/10s 预算，行号+摘要）、
+  /api/fs/changed-since（轮次产出：turnStart 后新增/修改的文件，≤20000 文件/3s 预算）、PUT /api/fs/file
   （.md/.txt/.json 保存：原子写 + expectedMtimeMs 冲突防护 409；编辑模式 full=1
   全量读 ≤10MiB 防截断）。
   归档/搜索的 jsonl 扫描同样用 LF 分帧流式读
@@ -69,10 +70,12 @@
 - **信任**：spawn 带 `--approve` 跳过项目信任交互确认。
 - **MCP/Skills 变更时机**：pi 子进程启动时读 mcp.json 与 skills，所以网页上改完
   只对「新会话」生效，已打开的会话要关闭重开（UI 提示里也写了）。
-- **选择题（ask_user_choice）**：pi RPC 没有交互问答协议（AskUserQuestion 只是
-  Anthropic 兼容层的工具名映射），故用文件握手：扩展阻塞写 .pnd-ask/<toolCallId>.json
-  并轮询 .answer.json；网页端从 tool_execution_start 渲染选项按钮，回答经 PUT
-  /api/fs/file 写入（依赖 json 可写）；10 分钟超时模型按默认继续。
+- **选择题（ask_user_choice）**：用 pi 官方 RPC 扩展 UI 子协议
+  （docs/rpc-extension-ui.md：ctx.ui.select → extension_ui_request → 客户端回
+  extension_ui_response；WS 新增 ui-response 通道单向写 stdin，PiProcess.send 不等响应）。
+  网页端渲染选项/确认/输入卡片；带 timeout 由 pi 侧自动解决，轮次结束时未作答卡片统一收尾。
+  （v0.4.3~0.5.0 曾用 .pnd-ask 文件握手，已废弃；早期结论「pi 无交互协议」有误——
+  rpc-extension-ui.md 文档一直存在，当时漏查）
 
 ## 约定
 

@@ -615,6 +615,49 @@ const routes = [
     }
   }],
 
+  // 本轮产出：turnStart 后项目内新增/修改的文件（对话结束时列在回答下方，可点开）
+  ["GET", "/api/fs/changed-since", async (_body, query) => {
+    const project = sessions.getProject(String(query.get("project") || ""));
+    if (!project) return { status: 404, json: { error: "项目不存在" } };
+    const since = Number(query.get("since"));
+    if (!Number.isFinite(since) || since <= 0) return { status: 400, json: { error: "缺少 since" } };
+    const skip = new Set([".git", "node_modules", ".pnd-ask", ".obsidian"]);
+    const files = [];
+    let checked = 0;
+    let truncated = false;
+    const deadline = Date.now() + 3000;
+    const walk = async (dir, rel) => {
+      if (truncated) return;
+      let entries;
+      try {
+        entries = await fsp.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (files.length >= 200 || checked >= 20000 || Date.now() >= deadline) {
+          truncated = true;
+          return;
+        }
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          if (!skip.has(entry.name) && !entry.name.startsWith(".")) await walk(join(dir, entry.name), childRel);
+        } else {
+          checked++;
+          try {
+            const st = await fsp.lstat(join(dir, entry.name));
+            if (st.mtimeMs >= since && st.size > 0) files.push({ path: childRel, size: st.size, mtimeMs: st.mtimeMs });
+          } catch {
+            /* 瞬态消失 */
+          }
+        }
+      }
+    };
+    await walk(resolve(project.path), "");
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return { json: { files, checked, truncated } };
+  }],
+
   // ===== 系统 / pi 更新 =====
 
   ["GET", "/api/system", async () => {
@@ -982,6 +1025,11 @@ wss.on("connection", (ws) => {
         } catch (error) {
           ws.send(JSON.stringify({ type: "rpc-result", id: msg.id, ok: false, error: error.message }));
         }
+      } else if (msg.type === "ui-response") {
+        // 扩展 UI 子协议：客户端回答（不等 pi 回响应，单向写 stdin）
+        const entry = subscriptions.get(msg.key);
+        const proc = entry?.proc || sessions.get(msg.key);
+        if (proc) proc.send({ type: "extension_ui_response", ...msg.payload });
       } else if (msg.type === "detach") {
         const entry = subscriptions.get(msg.key);
         if (entry) entry.proc.off("event", entry.handler);

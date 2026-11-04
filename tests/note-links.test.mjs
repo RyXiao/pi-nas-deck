@@ -66,8 +66,15 @@ const schedSrc = readFileSync(join(import.meta.dirname, "..", "server", "lib", "
 assert(schedSrc.includes("set_model") && schedSrc.includes("task.model") && schedSrc.includes("model = { provider, id }"), "定时任务模型校验+执行前 set_model 完整");
 assert(server.includes("\\.(md|markdown|txt|json)$") && app.includes("isEditable"), "编辑白名单含 txt/json");
 const askExt = readFileSync(join(import.meta.dirname, "..", "extensions", "ask-choice", "index.ts"), "utf8");
-assert(askExt.includes("ask_user_choice") && askExt.includes(".pnd-ask"), "选择题扩展存在且用文件握手");
-assert(app.includes("renderAskCard") && app.includes("finalizeAskCard") && app.includes(".answer.json"), "网页端选择题卡片完整");
+assert(askExt.includes("ask_user_choice") && askExt.includes("ctx?.ui?.select"), "选择题扩展用 pi 1.5 原生 ctx.ui.select");
+assert(askExt.includes("ctx?.ui?.select") && !askExt.includes("unlinkSync") && !app.includes(".answer.json"), "选择题走原生协议，旧文件握手（写/删文件）已移除");
+assert(app.includes("handleExtensionUiRequest") && app.includes("sendUiResponse") && server.includes("extension_ui_response"), "扩展 UI 子协议链路完整");
+
+// 12. v0.5.0：pi 1.5 锁定 / 本轮产出文件 / 连接期消息不再静默丢
+const dockerfile = readFileSync(join(import.meta.dirname, "..", "Dockerfile"), "utf8");
+assert(dockerfile.includes("ARG PI_VERSION=1.5.0"), "Dockerfile 锁定 pi 1.5.0");
+assert(server.includes("/api/fs/changed-since") && app.includes("fetchTurnOutputs"), "本轮产出文件链路完整");
+assert(app.includes("pendingPrompt") && app.includes("flushPendingPrompt") && app.includes('msg.type === "error"'), "连接期消息自动补发 + 服务端错误可见");
 // v0.4.3 修：模型选项值不得再用 NUL 分隔（innerHTML 解析会吞掉 NUL → id 为空 → 校验失败）
 assert(app.includes("modelChoices[Number(modelSel.value)]"), "模型选项用数组下标（非 NUL 分隔）");
 assert(!app.includes("escapeHtml(pname)}\\u0000"), "无 NUL 分隔的选项构建残留");

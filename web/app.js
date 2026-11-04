@@ -32,6 +32,10 @@ const state = {
   fsRowOrder: [], // 最近一次渲染的可见行顺序（shift 范围选择用）
   fsClipboard: null, // {mode:"copy"|"cut", project, items:[{rel,type}]}
   fsSort: localStorage.getItem("pnd-fs-sort") === "time" ? "time" : "name", // 文件树排序
+  turnStartedAt: 0, // 本轮开始时间（changed-since 扫产出文件）
+  lastTurnFooter: null, // 最近一轮的分割行（产出块挂它后面）
+  lastTurnStats: { files: [] },
+  pendingPrompt: false, // 会话连接中发送的消息：连上后自动补发（防静默丢弃）
 };
 
 // 兼容旧值：pnd-fs-open 曾存「打开的项目 id」，现在只存 1/0
@@ -117,7 +121,12 @@ function connectWs() {
     if (msg.type === "event" && msg.key === state.wsKey) handleEvent(msg.record);
     else if (msg.type === "attached") {
       state.wsKey = msg.key;
-      onAttached(msg.state);
+      void onAttached(msg.state).then(flushPendingPrompt).catch(() => {});
+    } else if (msg.type === "extension_ui_request") {
+      handleExtensionUiRequest(msg);
+    } else if (msg.type === "error") {
+      // 服务端错误（attach 失败等）之前被静默吞掉——多会话时“发指令无反馈”的帮凶
+      toast(msg.error || "服务端错误", true);
     } else if (msg.type === "rpc-result") {
       const pending = state.rpcPending.get(msg.id);
       if (pending) {
@@ -605,6 +614,7 @@ function handleEvent(record) {
   switch (record.type) {
     case "agent_start":
       state.streaming = true;
+      state.turnStartedAt = Date.now();
       $("abort-btn").classList.remove("hidden");
       $("send-btn").disabled = true;
       break;
@@ -613,6 +623,8 @@ function handleEvent(record) {
       $("abort-btn").classList.add("hidden");
       $("send-btn").disabled = false;
       finalizeAssistant();
+      finalizeWaitingAskCards(); // 未作答的选择卡（pi 侧已超时/取消）收尾
+      void fetchTurnOutputs(); // 本轮产出文件列表（异步，挂在分割行下）
       updateStats();
       break;
     case "message_start":
@@ -625,15 +637,13 @@ function handleEvent(record) {
       if (record.message?.role === "assistant") finalizeAssistant();
       break;
     case "tool_execution_start":
-      if (record.toolName === "ask_user_choice" && record.args?.question) renderAskCard(record);
-      else renderToolEvent(record, "running");
+      renderToolEvent(record, "running");
       break;
     case "tool_execution_update":
-      if (record.toolName !== "ask_user_choice") renderToolEvent(record, "running");
+      renderToolEvent(record, "running");
       break;
     case "tool_execution_end":
-      if (record.toolName === "ask_user_choice") finalizeAskCard(record);
-      else renderToolEvent(record, record.isError ? "fail" : "done");
+      renderToolEvent(record, record.isError ? "fail" : "done");
       break;
     case "session_info_changed":
       if (record.name) {
@@ -743,25 +753,61 @@ function appendTurnFooter(msg) {
   if (toolCount) footer.append(el("span", "", `🔧 ${toolCount} 个工具`));
   const tokens = stats?.tokens || 0;
   if (tokens) footer.append(el("span", "", `${fmtTokens(tokens)} tok`));
-  const files = stats?.files || [];
-  if (files.length) {
-    const wrap = el("span", "files");
-    wrap.append(el("span", "", "📝 改动:"));
-    for (const file of files.slice(0, 3)) {
-      const chip = el("span", "file-chip", file);
-      chip.title = file;
-      wrap.append(chip);
-    }
-    if (files.length > 3) wrap.append(el("span", "", `+${files.length - 3}`));
-    footer.append(wrap);
-  }
   if (state.currentModelId) {
     const chip = el("span", "model-chip", state.currentModelId);
     chip.title = state.currentModelId;
     footer.append(chip);
   }
   msg.after(footer);
+  state.lastTurnFooter = footer;
+  state.lastTurnStats = { files: [...(stats?.files || [])] };
   scrollBottom();
+}
+
+/** 连接建立后自动补发连接期间发送的消息。 */
+function flushPendingPrompt() {
+  if (!state.pendingPrompt) return;
+  if (state.wsKey && $("input").value.trim()) {
+    state.pendingPrompt = false;
+    void sendPrompt();
+  } else if (!$("input").value.trim()) {
+    state.pendingPrompt = false;
+  }
+}
+
+/** 本轮产出文件：turnStart 后项目内新增/修改的文件，挂分割行下、可点开；
+ *  扫不到（如文件在项目外）时回退到工具参数里的改动记录。 */
+async function fetchTurnOutputs() {
+  const footer = state.lastTurnFooter;
+  const project = state.activeProject;
+  if (!footer || !footer.isConnected || !project || !state.turnStartedAt) return;
+  if (footer.nextElementSibling?.classList?.contains("turn-outputs")) return; // 防重复挂载
+  try {
+    const data = await api(`/api/fs/changed-since?project=${encodeURIComponent(project.id)}&since=${Math.max(1, state.turnStartedAt - 2000)}`);
+    if (!footer.isConnected) return;
+    const block = el("div", "turn-outputs");
+    const files = data.files || [];
+    if (files.length) {
+      block.append(el("div", "list-label", `📄 本轮产出（${files.length}${data.truncated ? "+" : ""}）`));
+      for (const f of files.slice(0, 40)) {
+        const item = el("div", "output-file");
+        item.append(el("span", "of-name", f.path.split("/").pop()), el("span", "sub", fmtSize(f.size)));
+        item.title = `${f.path} — 点击查看`;
+        item.onclick = () => void openFilePreview(project, f.path);
+        block.append(item);
+      }
+    } else if (state.lastTurnStats?.files?.length) {
+      block.append(el("div", "list-label", "📝 改动（工具记录）"));
+      const wrap = el("div", "turn-outputs-chips");
+      for (const name of state.lastTurnStats.files.slice(0, 20)) wrap.append(el("span", "file-chip", name));
+      block.append(wrap);
+    } else {
+      return;
+    }
+    footer.after(block);
+  } catch {
+    /* 扫描失败不打扰阅读 */
+  }
 }
 
 function fmtDuration(ms) {
@@ -769,63 +815,129 @@ function fmtDuration(ms) {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`;
 }
 
-// ---- 选择题卡片（ask-choice 扩展的网页端；文件握手回答） ----
-// 模型调 ask_user_choice 工具 → 事件带问题/选项 → 渲染按钮 → 点击后经文件 API
-// 写 .pnd-ask/<toolCallId>.answer.json → 扩展轮询读到即返回给模型继续。
-function renderAskCard(record) {
-  const id = record.toolCallId;
+// ---- 扩展 UI 子协议（pi 1.5 extension_ui_request/response） ----
+// 选择/确认/输入对话框由 ask-choice 等扩展经 ctx.ui.select/confirm/input 发起，
+// 网页渲染卡片，点击后经 WS ui-response 通道回 extension_ui_response（不走文件握手）。
+function sendUiResponse(payload) {
+  if (!state.wsKey || state.ws?.readyState !== 1) return;
+  state.ws.send(JSON.stringify({ type: "ui-response", key: state.wsKey, payload }));
+}
+
+function handleExtensionUiRequest(msg) {
+  if (msg.method === "notify") {
+    toast(String(msg.message || ""), msg.notifyType === "error" || msg.notifyType === "warning");
+    return;
+  }
+  if (msg.method === "select" && Array.isArray(msg.options)) {
+    renderAskCard({ id: msg.id, question: msg.title || "请选择", options: msg.options });
+    return;
+  }
+  if (msg.method === "confirm") {
+    renderConfirmCard(msg);
+    return;
+  }
+  if (msg.method === "input") {
+    renderInputCard(msg);
+    return;
+  }
+  // editor/custom 等暂不支持：取消，绝不卡住模型
+  sendUiResponse({ id: msg.id, cancelled: true });
+}
+
+/** 选择题卡片（select）：选项按钮点击回 value。 */
+function renderAskCard(msg) {
+  const id = msg.id;
   if ($("messages").querySelector(`[data-ask="${CSS.escape(id)}"]`)) return;
-  const args = record.args || {};
   const card = el("div", "msg ask-card");
   card.dataset.ask = id;
   card.append(el("div", "role", "❓ 等待你的选择"));
-  card.append(el("div", "content", args.question || "（缺少问题）"));
+  card.append(el("div", "content", msg.question || "（缺少问题）"));
   const row = el("div", "ask-options");
-  const finish = async (answer) => {
+  const finish = (answer) => {
     row.querySelectorAll("button, input").forEach((b) => (b.disabled = true));
     card.classList.add("answered");
     card.querySelector(".role").textContent = `✅ 已选择：${answer}`;
-    try {
-      await api("/api/fs/file", {
-        method: "PUT",
-        body: JSON.stringify({
-          project: state.activeProject?.id,
-          path: `.pnd-ask/${id}.answer.json`,
-          content: JSON.stringify({ answer, at: Date.now() }),
-        }),
-      });
-    } catch (error) {
-      toast(`回答提交失败：${error.message}`, true);
-    }
+    sendUiResponse({ id, value: String(answer) });
   };
-  for (const opt of args.options || []) {
-    const btn = el("button", "ask-option", opt);
-    btn.onclick = () => void finish(opt);
+  for (const opt of msg.options) {
+    const btn = el("button", "ask-option", String(opt));
+    btn.onclick = () => finish(opt);
     row.append(btn);
-  }
-  if (args.allowOther ?? args.allow_other) {
-    const input = el("input", "ask-other");
-    input.placeholder = "其它答案…";
-    const ok = el("button", "ask-option", "确认");
-    ok.onclick = () => {
-      if (input.value.trim()) void finish(input.value.trim());
-    };
-    row.append(input, ok);
   }
   card.append(row);
   $("messages").append(card);
   scrollBottom();
 }
 
-function finalizeAskCard(record) {
-  const card = $("messages").querySelector(`[data-ask="${CSS.escape(record.toolCallId)}"]`);
-  if (!card) return;
-  card.querySelectorAll("button, input").forEach((b) => (b.disabled = true));
-  if (!card.classList.contains("answered")) {
+/** 确认卡片（confirm）：是/否。 */
+function renderConfirmCard(msg) {
+  const id = msg.id;
+  if ($("messages").querySelector(`[data-ask="${CSS.escape(id)}"]`)) return;
+  const card = el("div", "msg ask-card");
+  card.dataset.ask = id;
+  card.append(el("div", "role", "❓ 等待确认"));
+  const lines = [msg.title || "确认？"];
+  if (msg.message) lines.push(msg.message);
+  card.append(el("div", "content", lines.join("\n")));
+  const row = el("div", "ask-options");
+  const finish = (confirmed) => {
+    row.querySelectorAll("button").forEach((b) => (b.disabled = true));
     card.classList.add("answered");
-    card.querySelector(".role").textContent = "⏳ 超时未回答，模型将按默认判断继续";
-  }
+    card.querySelector(".role").textContent = confirmed ? "✅ 已确认" : "❎ 已取消";
+    sendUiResponse({ id, confirmed });
+  };
+  const yes = el("button", "ask-option", "确认");
+  yes.onclick = () => finish(true);
+  const no = el("button", "ask-option", "取消");
+  no.onclick = () => finish(false);
+  row.append(yes, no);
+  card.append(row);
+  $("messages").append(card);
   scrollBottom();
+}
+
+/** 输入卡片（input）：单行文本。 */
+function renderInputCard(msg) {
+  const id = msg.id;
+  if ($("messages").querySelector(`[data-ask="${CSS.escape(id)}"]`)) return;
+  const card = el("div", "msg ask-card");
+  card.dataset.ask = id;
+  card.append(el("div", "role", "✍️ 等待输入"));
+  card.append(el("div", "content", msg.title || "请输入"));
+  const row = el("div", "ask-options");
+  const input = el("input", "ask-other");
+  input.placeholder = msg.placeholder || "";
+  const ok = el("button", "ask-option", "提交");
+  const cancel = el("button", "ask-option", "取消");
+  const finish = (payload, label) => {
+    row.querySelectorAll("button, input").forEach((b) => (b.disabled = true));
+    card.classList.add("answered");
+    card.querySelector(".role").textContent = label;
+    sendUiResponse({ id, ...payload });
+  };
+  ok.onclick = () => {
+    if (input.value.trim()) finish({ value: input.value.trim() }, `✅ 已提交：${input.value.trim()}`);
+  };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") ok.onclick();
+    e.stopPropagation();
+  };
+  cancel.onclick = () => finish({ cancelled: true }, "❎ 已取消");
+  row.append(input, ok, cancel);
+  card.append(row);
+  $("messages").append(card);
+  input.focus();
+  scrollBottom();
+}
+
+/** 轮次结束时把未作答的对话卡收尾（pi 侧 timeout 已自动解决，视觉上不能永远“等待”）。 */
+function finalizeWaitingAskCards() {
+  for (const card of $("messages").querySelectorAll(".ask-card:not(.answered)")) {
+    card.classList.add("answered");
+    card.querySelectorAll("button, input").forEach((b) => (b.disabled = true));
+    const role = card.querySelector(".role");
+    if (role) role.textContent = "⏳ 未作答（超时/已跳过），模型已按默认继续";
+  }
 }
 
 function renderToolEvent(record, status) {
@@ -1066,7 +1178,15 @@ async function prepareAttachments() {
 async function sendPrompt() {
   const input = $("input");
   let text = input.value.trim();
-  if ((!text && !state.attachments.length) || !state.wsKey) return;
+  if (!text && !state.attachments.length) return;
+  if (!state.wsKey) {
+    // 会话连接中（新会话冷启动/切换会话时）：保留输入并提示，连上后自动补发——
+    // 之前这里静默 return，多会话时发指令「毫无反馈」（v0.5.0 修）
+    state.pendingPrompt = true;
+    toast("会话连接中，连上后会自动发送");
+    return;
+  }
+  state.pendingPrompt = false;
   input.value = "";
   autoResize(input);
 
