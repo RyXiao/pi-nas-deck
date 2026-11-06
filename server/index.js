@@ -437,6 +437,41 @@ const routes = [
 
   ["POST", "/api/models/test", async (body) => ({ json: await testConnection(body || {}) })],
 
+  // 按 baseUrl 拉取模型清单（服务端代抓，绕开浏览器 CORS；供供应商表单勾选添加）
+  ["POST", "/api/models/fetch", async (body) => {
+    const baseUrl = String(body?.baseUrl || "").trim().replace(/\/+$/, "");
+    if (!/^https?:\/\//i.test(baseUrl)) return { status: 400, json: { error: "baseUrl 必须是 http(s) 地址" } };
+    const apiKey = String(body?.apiKey || "");
+    const anthropic = body?.api === "anthropic-messages";
+    const candidates = [...new Set([`${baseUrl}/models`, `${baseUrl}/v1/models`, `${baseUrl.replace(/\/v1$/, "")}/models`])];
+    let lastErr = "";
+    for (const url of candidates) {
+      try {
+        const headers = anthropic
+          ? { "x-api-key": apiKey, "anthropic-version": "2023-06-01" }
+          : apiKey
+            ? { authorization: `Bearer ${apiKey}` }
+            : {};
+        const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
+        if (!res.ok) {
+          lastErr = `HTTP ${res.status}（${url}）`;
+          continue;
+        }
+        const data = await res.json();
+        const list = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : null;
+        if (!list) {
+          lastErr = `响应不是模型清单格式（${url}）`;
+          continue;
+        }
+        const models = list.map((m) => String(m?.id || m?.name || "").trim()).filter(Boolean).slice(0, 200);
+        return { json: { models, url } };
+      } catch (error) {
+        lastErr = `${error?.message || error}（${url}）`;
+      }
+    }
+    return { status: 400, json: { error: `获取模型列表失败：${lastErr}` } };
+  }],
+
   // ===== 用量统计（聚合 pi 的 analytics/usage.jsonl，按日/月 × 模型 × 项目） =====
 
   ["GET", "/api/usage", async (_body, query) => ({

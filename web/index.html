@@ -41,6 +41,12 @@
     </aside>
 
     <main id="content">
+      <!-- 移动端顶栏（≤768px 显示）：☰ 唤出项目/会话抽屉，中标题，📁 文件树 -->
+      <header id="mobile-topbar" class="mobile-only">
+        <button id="mobile-nav-btn" class="icon-btn" title="项目与会话">☰</button>
+        <span id="mobile-title">🥧 PiNasDeck</span>
+        <button id="mobile-fs-btn" class="icon-btn" title="文件树">📁</button>
+      </header>
       <!-- Chrome 式标签栏：文件标签 + 工作区标签（≥1 个文件标签时显示） -->
       <div id="tab-bar" class="hidden"></div>
       <!-- 聊天视图 -->
@@ -74,6 +80,7 @@
         <div>
           <h2>欢迎使用 PiNasDeck</h2>
           <p class="muted">左侧选择项目和会话，或点「＋ 新会话」开始。<br>先到 ⚙️ 设置里配置模型 API 和微信。</p>
+          <button id="welcome-new-btn" class="primary">🚀 开始新会话</button>
         </div>
       </section>
 
@@ -147,9 +154,6 @@
     <div id="upload-progress-current" class="hint"></div>
   </div>
 
-  <!-- 移动端（≤768px）：浮动导航/文件树按钮 + 遮罩，侧栏与右树变抽屉 -->
-  <button id="mobile-nav-btn" class="mobile-only" title="打开菜单">☰</button>
-  <button id="mobile-fs-btn" class="mobile-only" title="文件树">📁</button>
   <div id="mobile-backdrop" class="hidden"></div>
 
   <script src="/vendor/marked.min.js"></script>

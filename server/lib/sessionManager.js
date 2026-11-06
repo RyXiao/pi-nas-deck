@@ -90,6 +90,7 @@ export class SessionManager {
         name: info.name || null,
         preview: info.preview || "",
         running: this.processes.has(file),
+        streaming: !!this.processes.get(file)?.streaming,
         archived,
         bytes: safeSize(file),
       });
@@ -107,6 +108,7 @@ export class SessionManager {
         name: null,
         preview: "（新会话，尚未发消息）",
         running: true,
+        streaming: !!proc.streaming,
         archived,
         bytes: 0,
       });

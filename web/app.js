@@ -273,7 +273,17 @@ async function sessionRow(project, session) {
   const left = el("div", "");
   left.style.minWidth = "0";
   left.style.flex = "1";
-  const name = el("div", "name", session.name || session.preview || "（空会话）");
+  const name = el("div", "name");
+  if (session.streaming) {
+    const dot = el("span", "sess-dot green");
+    dot.title = "正在运行";
+    name.append(dot);
+  } else if (session.running) {
+    const dot = el("span", "sess-dot blue");
+    dot.title = "会话在线（已完成/待命，空闲超时自动回收）";
+    name.append(dot);
+  }
+  name.append(document.createTextNode(session.name || session.preview || "（空会话）"));
   const meta = el("div", "sub", new Date(session.timestamp).toLocaleString());
   left.append(name, meta);
 
@@ -281,7 +291,6 @@ async function sessionRow(project, session) {
   tags.style.display = "flex";
   tags.style.gap = "4px";
   tags.style.flexShrink = "0";
-  if (session.running) tags.append(el("span", "tag", "● 运行中"));
   if (session.archived) tags.append(el("span", "tag", "已归档"));
 
   // 操作：关闭（运行中）/ 归档 / 删除
@@ -482,6 +491,7 @@ async function attachSession(project, session, opts = {}) {
   }
   showWorkspaceView();
   $("chat-title").textContent = session?.name || session?.preview || "新会话";
+  $("mobile-title").textContent = session?.name || session?.preview || "新会话";
   $("messages").innerHTML = "";
   $("abort-btn").classList.add("hidden");
   if (!opts.silent) loadSessions();
@@ -1278,6 +1288,7 @@ $("abort-btn").addEventListener("click", async () => {
 });
 
 $("new-chat-btn").addEventListener("click", newChat);
+$("welcome-new-btn").addEventListener("click", () => void newChat());
 
 // ===== 快捷菜单：⚡ Skills / 🔌 MCP =====
 // ⚡ 列出 skills（读 /api/skills，不依赖会话），点击把 /name 填入输入框；
@@ -1422,7 +1433,7 @@ async function renderModelsTab(body) {
     addBtn.onclick = () => {
       let n = 1;
       while (providers[`provider${n}`]) n += 1;
-      providers[`provider${n}`] = { baseUrl: "", api: "openai-completions", apiKey: "", models: [{ id: "" }] };
+      providers[`供应商${n}`] = { baseUrl: "", api: "openai-completions", apiKey: "", models: [{ id: "" }] };
       renderProviderCards();
     };
     list.append(addBtn);
@@ -1432,13 +1443,15 @@ async function renderModelsTab(body) {
     const card = el("div", "card");
     card.style.marginBottom = "12px";
     const models = provider.models || [];
+    let pendingName = name; // 保存时生效的重命名
 
     card.innerHTML = `<h3>📦 ${escapeHtml(name)}</h3>`;
     const rows = el("div", "");
     rows.append(
       fieldRow("名称", (input) => {
         input.value = name;
-        input.disabled = true;
+        input.placeholder = "供应商名称（如 deepseek、xiaomi）";
+        input.oninput = () => (pendingName = input.value);
       }),
       fieldRow("baseUrl", (input) => {
         input.value = provider.baseUrl || "";
@@ -1460,6 +1473,55 @@ async function renderModelsTab(body) {
       }),
     );
     card.append(rows);
+
+    // 按 baseUrl 获取模型清单（服务端代抓绕开 CORS）→ 勾选批量添加到本供应商
+    const fetchRow = el("div", "row");
+    const fetchBtn = el("button", "", "🔍 按 baseUrl 获取模型列表");
+    const pickBox = el("div", "");
+    fetchBtn.onclick = async () => {
+      const url = String(provider.baseUrl || "").trim();
+      if (!/^https?:\/\//i.test(url)) return toast("先填写 baseUrl（http/https）", true);
+      fetchBtn.disabled = true;
+      const orig = fetchBtn.textContent;
+      fetchBtn.textContent = "查询中…（最多 15 秒）";
+      try {
+        const res = await api("/api/models/fetch", { method: "POST", body: JSON.stringify({ baseUrl: url, api: provider.api, apiKey: provider.apiKey }) });
+        const have = new Set((provider.models || []).map((m) => m.id));
+        const fresh = (res.models || []).filter((id) => !have.has(id));
+        pickBox.innerHTML = "";
+        pickBox.append(el("div", "hint", `查到 ${res.models.length} 个模型，可新增 ${fresh.length} 个（已存在的已排除）：`));
+        if (!fresh.length) pickBox.append(el("div", "hint", "没有新模型——列表里已全有"));
+        for (const id of fresh) {
+          const label = el("label", "model-pick");
+          const cb = el("input", "");
+          cb.type = "checkbox";
+          cb.value = id;
+          cb.checked = true;
+          label.append(cb, el("span", "", id));
+          pickBox.append(label);
+        }
+        if (fresh.length) {
+          const addBtn2 = el("button", "primary", "添加勾选的模型");
+          addBtn2.style.marginTop = "6px";
+          addBtn2.onclick = () => {
+            const checked = [...pickBox.querySelectorAll('input[type="checkbox"]:checked')].map((c) => c.value);
+            if (!checked.length) return toast("未勾选任何模型", true);
+            provider.models = provider.models || [];
+            for (const id of checked) if (!provider.models.some((m) => m.id === id)) provider.models.push({ id });
+            toast(`已添加 ${checked.length} 个模型（点「保存」写入配置）`);
+            renderProviderCards();
+          };
+          pickBox.append(addBtn2);
+        }
+      } catch (error) {
+        toast(error.message, true);
+      } finally {
+        fetchBtn.disabled = false;
+        fetchBtn.textContent = orig;
+      }
+    };
+    fetchRow.append(fetchBtn);
+    card.append(fetchRow, pickBox);
 
     const modelLabel = el("div", "list-label", "模型 ID（每行一个）");
     card.append(modelLabel);
@@ -1501,6 +1563,22 @@ async function renderModelsTab(body) {
     };
     saveBtn.onclick = async () => {
       provider.models = (provider.models || []).filter((m) => m.id && m.id.trim());
+      // 重命名供应商（改 key）：校验后移动条目并重渲染整表
+      const newName = (pendingName || name).trim();
+      if (newName !== name) {
+        if (!/^[\w\u4e00-\u9fa5\- ]{1,64}$/.test(newName)) return toast("名称仅限中英文/数字/_/-/空格（1-64 字）", true);
+        if (providers[newName]) return toast("同名供应商已存在", true);
+        delete providers[name];
+        providers[newName] = provider;
+        try {
+          await api("/api/models", { method: "PUT", body: JSON.stringify({ providers }) });
+          toast(`已保存并重命名为「${newName}」（已开会话可能仍引用旧名，新会话生效）`);
+          renderProviderCards();
+        } catch (error) {
+          toast(error.message, true);
+        }
+        return;
+      }
       try {
         await api("/api/models", { method: "PUT", body: JSON.stringify({ providers }) });
         toast("已保存");

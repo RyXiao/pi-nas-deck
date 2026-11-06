@@ -75,6 +75,13 @@ const dockerfile = readFileSync(join(import.meta.dirname, "..", "Dockerfile"), "
 assert(dockerfile.includes("ARG PI_VERSION=1.5.0"), "Dockerfile 锁定 pi 1.5.0");
 assert(server.includes("/api/fs/changed-since") && app.includes("fetchTurnOutputs"), "本轮产出文件链路完整");
 assert(app.includes("pendingPrompt") && app.includes("flushPendingPrompt") && app.includes('msg.type === "error"'), "连接期消息自动补发 + 服务端错误可见");
+
+// 13. v0.5.1：供应商重命名 / baseUrl 拉模型 / 会话状态点 / 移动端顶栏
+assert(app.includes("pendingName") && app.includes("同名供应商已存在"), "供应商可重命名（校验+去重）");
+assert(server.includes("/api/models/fetch") && app.includes("按 baseUrl 获取模型列表"), "模型清单拉取链路完整");
+const sessSrc = readFileSync(join(import.meta.dirname, "..", "server", "lib", "sessionManager.js"), "utf8");
+assert(sessSrc.includes("streaming:") && app.includes("sess-dot green") && app.includes("sess-dot blue"), "会话状态点（绿=运行/蓝=待命）");
+assert(html.includes('id="mobile-topbar"') && html.includes('id="welcome-new-btn"') && app.includes("welcome-new-btn"), "移动端顶栏 + 对话优先首页");
 // v0.4.3 修：模型选项值不得再用 NUL 分隔（innerHTML 解析会吞掉 NUL → id 为空 → 校验失败）
 assert(app.includes("modelChoices[Number(modelSel.value)]"), "模型选项用数组下标（非 NUL 分隔）");
 assert(!app.includes("escapeHtml(pname)}\\u0000"), "无 NUL 分隔的选项构建残留");

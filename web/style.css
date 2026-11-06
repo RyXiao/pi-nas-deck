@@ -136,6 +136,7 @@ pre code { background: transparent; padding: 0; }
 .item .act:hover { color: var(--accent); }
 
 /* 项目 → 会话树 */
+#project-list > div + div { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 6px; }
 .proj-row { display: flex; align-items: center; gap: 4px; padding-left: 6px; }
 .proj-row .chevron {
   width: 16px;
@@ -147,7 +148,7 @@ pre code { background: transparent; padding: 0; }
   font-size: 10px;
 }
 .proj-row .chevron.open { transform: rotate(90deg); }
-.proj-row .proj-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.proj-row .proj-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; font-weight: 600; }
 .proj-row .add-sess { opacity: 0; border: none; background: transparent; color: var(--muted); padding: 2px 5px; }
 .proj-row:hover .add-sess { opacity: 1; }
 .proj-row .add-sess:hover { color: var(--accent); }
@@ -156,6 +157,15 @@ pre code { background: transparent; padding: 0; }
 .sess-group .item .name { color: var(--fg); }
 .sess-group .item.archived .name { color: var(--muted); font-style: italic; }
 .sess-group .item .tag { font-size: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 0 5px; color: var(--muted); flex-shrink: 0; }
+/* 会话状态点：绿=正在运行（脉动），蓝=在线待命（进程活着，空闲会回收） */
+.sess-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; flex-shrink: 0; vertical-align: middle; }
+.sess-dot.green { background: var(--ok); animation: dot-pulse 1.6s ease-in-out infinite; }
+.sess-dot.blue { background: var(--accent); }
+@keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+/* 模型勾选列表（按 baseUrl 获取） */
+.model-pick { display: flex; align-items: center; gap: 7px; font-size: 13px; padding: 3px 2px; cursor: pointer; font-family: var(--mono); overflow: hidden; }
+.model-pick input { width: auto; flex-shrink: 0; }
+.model-pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-left: 6px; }
 .dot.on { background: var(--ok); }
 
@@ -607,27 +617,25 @@ mark { background: rgba(217,164,65,.25); color: #ffd76a; border-radius: 3px; pad
 .sched-day { width: 76px !important; flex: 0 0 auto; }
 .sched-time { width: 120px !important; flex: 0 0 auto; }
 
-/* ===== 移动端（≤768px）：侧栏/文件树变抽屉 + 浮动按钮 ===== */
+/* ===== 移动端（≤768px）：顶栏 + 抽屉（对标千问/DeepSeek App） ===== */
 .mobile-only { display: none !important; }
+#welcome-new-btn { margin-top: 18px; font-size: 16px; padding: 12px 30px; }
 @media (max-width: 768px) {
   .mobile-only { display: flex !important; align-items: center; justify-content: center; }
-  /* 浮动导航按钮：左开侧栏、右开文件树，悬浮在内容之上 */
-  #mobile-nav-btn,
-  #mobile-fs-btn {
-    position: fixed;
-    top: 6px;
-    z-index: 50;
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
+  /* 顶栏：☰ 唤出抽屉 / 标题 / 📁 文件树 */
+  #mobile-topbar {
+    display: flex !important;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: 46px;
+    padding: 0 6px;
     background: var(--bg2);
-    border: 1px solid var(--border);
-    color: var(--fg);
-    font-size: 18px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
   }
-  #mobile-nav-btn { left: 8px; }
-  #mobile-fs-btn { right: 8px; }
+  #mobile-topbar .icon-btn { font-size: 19px; padding: 6px 12px; color: var(--fg); }
+  #mobile-title { font-weight: 600; font-size: 15px; flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #mobile-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 65; }
   /* 侧栏：左侧抽屉滑入 */
   #sidebar {
@@ -657,7 +665,7 @@ mark { background: rgba(217,164,65,.25); color: #ffd76a; border-radius: 3px; pad
   }
   @keyframes fs-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
   /* 为浮动按钮让出顶部条 */
-  #content { padding-top: 48px; }
+  /* 顶栏已在正常流内，无需额外让位 */
   #chat-header { padding: 8px 12px; }
   #messages { padding: 12px; }
   #composer { padding: 10px; }
