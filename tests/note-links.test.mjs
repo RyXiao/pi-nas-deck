@@ -82,6 +82,21 @@ assert(server.includes("/api/models/fetch") && app.includes("按 baseUrl 获取�
 const sessSrc = readFileSync(join(import.meta.dirname, "..", "server", "lib", "sessionManager.js"), "utf8");
 assert(sessSrc.includes("streaming:") && app.includes("sess-dot green") && app.includes("sess-dot blue"), "会话状态点（绿=运行/蓝=待命）");
 assert(html.includes('id="mobile-topbar"') && html.includes('id="welcome-new-btn"') && app.includes("welcome-new-btn"), "移动端顶栏 + 对话优先首页");
+
+// 14. v0.5.1 修：role=error 实时渲染（0s 静默）/ 下拉带服务商名 / 保存提示重开会话
+assert(app.includes('record.message?.role === "error"') && app.includes("renderLiveError"), "provider 错误实时渲染（0s 静默修复）");
+assert(app.includes("${model.name || model.id} · ${model.provider}"), "模型下拉选项带服务商名");
+assert(app.includes("新模型对已开的会话需关闭重开才生效"), "保存模型提示 pi 进程缓存语义");
+
+// 15. v0.5.2：成本换算（价格表从 models.json cost 来，缺价不偷换成 0）
+assert(server.includes("costs[`${pname}/${m.id}`]") && app.includes("fmtCost") && app.includes("priceMissing"), "成本换算链路完整");
+assert(app.includes("model-price") && app.includes("输入 $/M"), "模型表单可填价格");
+
+// 16. v0.5.3：subagent 可视化 / Ctrl+K 全局搜索 / 进程池治理
+assert(app.includes("renderSubagentCard") && app.includes("subagent-card"), "subagent 子代理卡片");
+assert(html.includes('id="palette"') && app.includes("runPaletteSearch") && server.includes("/api/fs/search"), "Ctrl+K 全局搜索（会话+文件）");
+const smSrc = readFileSync(join(import.meta.dirname, "..", "server", "lib", "sessionManager.js"), "utf8");
+assert(smSrc.includes("_enforceLimit") && smSrc.includes("MAX_CONCURRENT") && server.includes("/api/sessions/processes"), "进程池 LRU 治理 + 设置页可见");
 // v0.4.3 修：模型选项值不得再用 NUL 分隔（innerHTML 解析会吞掉 NUL → id 为空 → 校验失败）
 assert(app.includes("modelChoices[Number(modelSel.value)]"), "模型选项用数组下标（非 NUL 分隔）");
 assert(!app.includes("escapeHtml(pname)}\\u0000"), "无 NUL 分隔的选项构建残留");

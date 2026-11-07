@@ -11,6 +11,8 @@ import { PiProcess } from "./piProcess.js";
 import { readJson, writeJson } from "./store.js";
 
 const IDLE_KILL_MS = Number(process.env.PI_IDLE_KILL_MS || 30 * 60 * 1000);
+// 并发进程上限：超过时按「最久未活动」挂起（只挂非流式），防多开会话吃爆 NAS 内存
+const MAX_CONCURRENT = Number(process.env.PI_MAX_CONCURRENT || 4);
 
 export class SessionManager {
   constructor(projectsPath, sessionDir) {
@@ -222,6 +224,7 @@ export class SessionManager {
 
     proc = new PiProcess({ cwd: project.path, sessionFile, sessionDir: this.sessionDir, name });
     this.processes.set(key, proc);
+    this._enforceLimit(key); // 新增进程后按 LRU 挂起多余的非流式进程
     proc.on("event", (record) => {
       if (record.type === "message_end" && record.message?.sessionFile) {
         // 新会话落盘后，把 key 迁移到真实文件路径，后续请求/事件归属正确
@@ -293,6 +296,59 @@ export class SessionManager {
         this.processes.delete(key);
       }
     }
+  }
+
+  /**
+   * 并发上限治理：超过 MAX_CONCURRENT 时挂起最久未活动的**非流式**进程。
+   * 流式中的进程绝不挂起；keepKey（刚打开的）也不挂。返回被挂起的 key 列表。
+   */
+  _enforceLimit(keepKey) {
+    const suspended = [];
+    let guard = 0;
+    while (this.processes.size > MAX_CONCURRENT && guard++ < 100) {
+      let victimKey = null;
+      let victimAt = Infinity;
+      for (const [key, proc] of this.processes) {
+        if (key === keepKey || proc.streaming) continue;
+        if (proc.lastActivity < victimAt) {
+          victimAt = proc.lastActivity;
+          victimKey = key;
+        }
+      }
+      if (!victimKey) break; // 全部在流式中：宁超限也不打断工作
+      const proc = this.processes.get(victimKey);
+      proc.kill();
+      this.processes.delete(victimKey);
+      suspended.push(victimKey);
+    }
+    return suspended;
+  }
+
+  /** 进程池快照（设置页可见：谁在跑、占着多久、可手动挂起释放内存）。 */
+  listProcesses() {
+    const now = Date.now();
+    return [...this.processes.entries()].map(([key, proc]) => ({
+      key,
+      sessionFile: proc.sessionFile || null,
+      cwd: proc.cwd,
+      streaming: !!proc.streaming,
+      idleMs: now - (proc.lastActivity || now),
+      pid: proc.child?.pid || null,
+    }));
+  }
+
+  /** 手动挂起一个会话进程（保留会话文件，下次点开自动重启）。 */
+  suspend(key) {
+    const proc = this.processes.get(key);
+    if (!proc) return { suspended: false, reason: "not-running" };
+    if (proc.streaming) return { suspended: false, reason: "streaming" };
+    proc.kill();
+    this.processes.delete(key);
+    return { suspended: true };
+  }
+
+  get limits() {
+    return { maxConcurrent: MAX_CONCURRENT, idleKillMs: IDLE_KILL_MS };
   }
 
   /**

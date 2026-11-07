@@ -527,7 +527,8 @@ async function loadModelSelect() {
   for (const model of models) {
     const option = document.createElement("option");
     option.value = `${model.provider}\u0000${model.id}`;
-    option.textContent = model.name || model.id;
+    // 选项文案带服务商名（同名模型不同服务商可区分）；完整信息仍在 title
+    option.textContent = `${model.name || model.id} · ${model.provider}`;
     option.title = `${model.provider}/${model.id}`;
     if (model.id === state.currentModelId) option.selected = true;
     select.append(option);
@@ -645,6 +646,11 @@ function handleEvent(record) {
       break;
     case "message_end":
       if (record.message?.role === "assistant") finalizeAssistant();
+      else if (record.message?.role === "error") {
+        // provider/模型报错（如新加的模型配置不完整）：实时渲染，不再静默吞掉（v0.5.1 修）
+        finalizeAssistant();
+        renderLiveError(record.message);
+      }
       break;
     case "tool_execution_start":
       renderToolEvent(record, "running");
@@ -662,6 +668,50 @@ function handleEvent(record) {
       }
       break;
   }
+}
+
+/** subagent 工具卡片：展示子代理名/任务/状态与实时输出（多会话编排可视化）。
+ *  pi-subagents 把进度放在 tool_execution_update.partialResult。 */
+function renderSubagentCard(record, status) {
+  if (!currentAssistant) startAssistantMsg();
+  const id = record.toolCallId;
+  let card = $("messages").querySelector(`[data-sa="${CSS.escape(id)}"]`);
+  const args = record.args || {};
+  if (!card) {
+    card = el("div", "subagent-card");
+    card.dataset.sa = id;
+    const head = el("div", "sa-head");
+    const agent = args.agent || args.agents || "subagent";
+    head.append(el("span", "sa-icon", "🧩"), el("span", "sa-agent", `子代理 · ${typeof agent === "string" ? agent : "多个"}`));
+    const badge = el("span", "sa-status");
+    head.append(badge);
+    card.append(head);
+    const task = args.task || args[0]?.task;
+    if (task) card.append(el("div", "sa-task", String(task).slice(0, 200)));
+    card.append(el("div", "sa-log"));
+    currentAssistant.content.append(card);
+  }
+  const badge = card.querySelector(".sa-status");
+  const log = card.querySelector(".sa-log");
+  badge.className = `sa-status ${status}`;
+  badge.textContent = status === "running" ? "● 运行中" : status === "fail" ? "✗ 失败" : "✓ 完成";
+  const partial = record.partialResult?.content || record.result?.content;
+  if (partial) {
+    const text = extractToolText(partial);
+    if (text) {
+      log.textContent = truncate(text, 4000);
+      log.classList.remove("hidden");
+    }
+  }
+  scrollBottom();
+}
+
+function renderLiveError(message) {
+  const text = extractText(message.content) || "（无错误详情）";
+  const msg = el("div", "msg error");
+  msg.append(el("div", "content", text));
+  $("messages").append(msg);
+  scrollBottom();
 }
 
 function startAssistantMsg() {
@@ -951,6 +1001,11 @@ function finalizeWaitingAskCards() {
 }
 
 function renderToolEvent(record, status) {
+  // subagent 工具：单独渲染子代理卡片（多会话编排可视化）
+  if (record.toolName === "subagent" || String(record.toolName || "").startsWith("subagents_")) {
+    renderSubagentCard(record, status);
+    return;
+  }
   // 工具事件独立成行显示（不在 assistant 块内，避免流式重排抖动）
   if (!currentAssistant) startAssistantMsg();
   const key = record.toolCallId;
@@ -1581,7 +1636,8 @@ async function renderModelsTab(body) {
       }
       try {
         await api("/api/models", { method: "PUT", body: JSON.stringify({ providers }) });
-        toast("已保存");
+        // pi 进程启动时读 models.json（已实测：运行中改配置 get_available_models 不变）
+        toast("已保存；新模型对已开的会话需关闭重开才生效（pi 启动时读配置）");
       } catch (error) {
         toast(error.message, true);
       }
@@ -1599,13 +1655,40 @@ async function renderModelsTab(body) {
     input.value = model.id || "";
     input.placeholder = "模型 ID，如 gpt-4o / qwen2.5-coder:7b";
     input.oninput = () => (model.id = input.value);
+    // 价格（USD/百万 token，pi 的 cost 字段）：决定了用量页的费用换算
+    const nums = [
+      ["in", "输入 $/M"],
+      ["out", "输出 $/M"],
+      ["cacheRead", "缓存读 $/M"],
+    ];
+    const priceInputs = nums.map(([key, ph]) => {
+      const inp = el("input", "model-price");
+      inp.type = "number";
+      inp.step = "0.001";
+      inp.min = "0";
+      inp.placeholder = ph;
+      inp.title = `${ph}（USD/百万 token，留空 = 未配价）`;
+      const v = model.cost?.[key];
+      if (typeof v === "number") inp.value = String(v);
+      inp.oninput = () => {
+        const n = inp.value.trim();
+        model.cost = model.cost || {};
+        if (n === "") {
+          delete model.cost[key];
+          if (!Object.keys(model.cost).length) delete model.cost; // 全空则清掉 cost
+        } else {
+          model.cost[key] = Number(n);
+        }
+      };
+      return inp;
+    });
     const del = el("button", "del", "✕");
     del.onclick = () => {
       const provider = Object.values(providers).find((p) => (p.models || []).includes(model));
       if (provider) provider.models = provider.models.filter((m) => m !== model);
       row.remove();
     };
-    row.append(input, del);
+    row.append(input, ...priceInputs, del);
     void index;
     return row;
   }
@@ -1656,22 +1739,50 @@ async function renderUsageTab(body) {
     const maxTotal = Math.max(1, ...data.rows.map((r) => r.total));
     const table = el("table", "simple");
     const headRow = el("tr", "");
-    headRow.innerHTML = `<th>${group === "day" ? "日期" : "月份"}</th><th>项目</th><th>模型</th><th style="text-align:right">次数</th><th style="text-align:right">输入</th><th style="text-align:right">输出</th><th style="text-align:right">合计</th><th style="width:120px">占比</th>`;
+    headRow.innerHTML = `<th>${group === "day" ? "日期" : "月份"}</th><th>项目</th><th>模型</th><th style="text-align:right">次数</th><th style="text-align:right">输入</th><th style="text-align:right">输出</th><th style="text-align:right">合计</th><th style="text-align:right">费用</th><th style="width:110px">占比</th>`;
     table.append(headRow);
     for (const row of data.rows) {
       const tr = el("tr", "");
       const modelShort = row.model.split("/").pop();
+      const costCell = row.cost === null ? '<span class="hint">未配价</span>' : `${fmtCost(row.cost)}${row.priceMissing ? '<span class="hint" title="部分请求使用的模型未配价格">*</span>' : ""}`;
       tr.innerHTML =
         `<td>${escapeHtml(row.bucket)}</td><td>${escapeHtml(row.project || "—")}</td><td title="${escapeHtml(row.model)}">${escapeHtml(modelShort)}</td>` +
         `<td style="text-align:right">${row.count}</td><td style="text-align:right">${fmtTokens(row.input)}</td><td style="text-align:right">${fmtTokens(row.output)}</td><td style="text-align:right">${fmtTokens(row.total)}</td>` +
+        `<td style="text-align:right">${costCell}</td>` +
         `<td><div class="usage-bar"><div style="width:${Math.max(2, Math.round((row.total / maxTotal) * 100))}%"></div></div></td>`;
       table.append(tr);
     }
     panel.append(table);
   }
-  panel.append(el("p", "hint", `全部合计：${fmtTokens(data.totals.total)} tokens（输入 ${fmtTokens(data.totals.input)} / 输出 ${fmtTokens(data.totals.output)}），共 ${data.totals.count} 次请求`));
+  const costLine = data.totals.cost === null ? "（未配价格，无法估算——到「模型 / API」给模型填 cost）" : fmtCost(data.totals.cost) + (data.totals.priceMissing ? "*（部分模型未配价，已计入的为已知部分）" : "");
+  panel.append(el("p", "hint", `全部合计：${fmtTokens(data.totals.total)} tokens（输入 ${fmtTokens(data.totals.input)} / 输出 ${fmtTokens(data.totals.output)}），共 ${data.totals.count} 次请求；费用约 ${costLine}`));
+  if (group === "month" && data.rows.length) {
+    const months = [...new Set(data.rows.map((r) => r.bucket))];
+    if (months.length > 1) {
+      panel.append(el("p", "hint", `月度对比：${months.slice(0, 6).map((m) => `${m} ${fmtCost(sumCostOf(data.rows.filter((r) => r.bucket === m)))}`).join(" · ")}`));
+    }
+  }
   body.innerHTML = "";
   body.append(panel);
+}
+
+/** 成本显示：USD 为主，小于 0.01 时给四位小数 */
+function fmtCost(usd) {
+  if (usd === null || usd === undefined) return "—";
+  if (usd === 0) return "$0";
+  return usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
+}
+
+function sumCostOf(rows) {
+  let sum = 0;
+  let known = false;
+  for (const r of rows) {
+    if (r.cost !== null) {
+      sum += r.cost;
+      known = true;
+    }
+  }
+  return known ? sum : null;
 }
 
 function fmtTokens(n) {
@@ -2292,6 +2403,44 @@ async function renderSystemTab(body) {
   };
   updateCard.append(updateBtn, logBox);
   panel.append(updateCard);
+
+  // 会话进程池（内存治理）：每个会话一个 pi 进程，超过并发上限时按最久未活动自动挂起
+  const procCard = el("div", "card");
+  procCard.innerHTML = "<h3>🧠 会话进程池</h3>";
+  const procBox = el("div", "");
+  procCard.append(procBox);
+  panel.append(procCard);
+  const loadProcs = async () => {
+    try {
+      const data = await api("/api/sessions/processes");
+      procBox.innerHTML = "";
+      procBox.append(el("p", "hint", `上限 ${data.limits.maxConcurrent} 个并发进程（超过时按最久未活动自动挂起，流式中的不挂）；空闲 ${Math.round(data.limits.idleKillMs / 60000)} 分钟回收。`));
+      if (!data.processes.length) return procBox.append(el("p", "hint", "当前没有运行的会话进程。"));
+      const table = el("table", "simple");
+      table.innerHTML = "<tr><th>会话</th><th>状态</th><th>空闲</th><th></th></tr>";
+      for (const p of data.processes) {
+        const tr = el("tr", "");
+        const name = (p.sessionFile || p.key).split(/[\\/]/).pop();
+        tr.innerHTML = `<td title="${escapeHtml(p.cwd)}">${escapeHtml(name)}</td><td>${p.streaming ? "● 运行中" : "待命"}</td><td>${Math.round(p.idleMs / 1000)}s</td>`;
+        const td = el("td", "");
+        const btn = el("button", p.streaming ? "" : "", "挂起");
+        btn.disabled = p.streaming;
+        btn.title = p.streaming ? "运行中不能挂起" : "结束进程释放内存（会话文件保留，点开自动重启）";
+        btn.onclick = async () => {
+          const res = await api("/api/sessions/suspend", { method: "POST", body: JSON.stringify({ key: p.key }) });
+          toast(res.suspended ? "已挂起（释放内存）" : `未挂起：${res.reason}`, !res.suspended);
+          void loadProcs();
+        };
+        td.append(btn);
+        tr.append(td);
+        table.append(tr);
+      }
+      procBox.append(table);
+    } catch (error) {
+      procBox.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
+    }
+  };
+  void loadProcs();
 
   // 更新说明卡：CHANGELOG.md 渲染（marked 已在前端）
   const changeCard = el("div", "card");
@@ -3707,6 +3856,108 @@ document.addEventListener("keydown", (e) => {
     void fsPasteInto(project, state.fsSelectedDir || "");
   }
 });
+
+// ===== Ctrl+K 全局搜索面板（会话内容 + 文件名） =====
+// 比侧栏搜索强的地方：一个入口两类结果，键盘驱动（↑↓/Enter/Esc），不占侧栏空间。
+state.palette = { items: [], index: 0, timer: null };
+
+function openPalette() {
+  $("palette").classList.remove("hidden");
+  const input = $("palette-input");
+  input.value = "";
+  input.focus();
+  state.palette.items = [];
+  state.palette.index = 0;
+  $("palette-results").innerHTML = '<div class="hint">输入关键词：会话标题/内容与当前项目文件名</div>';
+}
+
+function closePalette() {
+  $("palette").classList.add("hidden");
+}
+
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    $("palette").classList.contains("hidden") ? openPalette() : closePalette();
+  } else if (e.key === "Escape" && !$("palette").classList.contains("hidden")) {
+    closePalette();
+  }
+});
+
+$("palette").addEventListener("click", (e) => {
+  if (e.target.id === "palette") closePalette();
+});
+
+$("palette-input").addEventListener("input", () => {
+  clearTimeout(state.palette.timer);
+  const q = $("palette-input").value.trim();
+  if (q.length < 2) {
+    $("palette-results").innerHTML = '<div class="hint">至少输入 2 个字符</div>';
+    state.palette.items = [];
+    return;
+  }
+  state.palette.timer = setTimeout(() => void runPaletteSearch(q), 300);
+});
+
+$("palette-input").addEventListener("keydown", (e) => {
+  const items = state.palette.items;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!items.length) return;
+    state.palette.index = (state.palette.index + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+    renderPaletteResults();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    const item = items[state.palette.index];
+    if (item) {
+      closePalette();
+      item.run();
+    }
+  }
+});
+
+async function runPaletteSearch(q) {
+  const box = $("palette-results");
+  box.innerHTML = '<div class="hint">搜索中…</div>';
+  const project = state.activeProject || state.projects[0];
+  const [sessionsRes, filesRes] = await Promise.allSettled([
+    api(`/api/search?q=${encodeURIComponent(q)}${state.showArchived ? "&archived=1" : ""}`),
+    project ? api(`/api/fs/search?project=${encodeURIComponent(project.id)}&q=${encodeURIComponent(q)}`) : Promise.resolve({ files: [] }),
+  ]);
+  const items = [];
+  const sessHits = sessionsRes.status === "fulfilled" ? sessionsRes.value.results || [] : [];
+  for (const hit of sessHits.slice(0, 12)) {
+    items.push({
+      kind: "会话",
+      title: hit.sessionName || "（无标题会话）",
+      sub: `${hit.projectName} · ${hit.snippet || ""}`.slice(0, 130),
+      run: () => openSearchHit(hit, q),
+    });
+  }
+  const fileHits = filesRes.status === "fulfilled" ? filesRes.value.files || [] : [];
+  for (const f of fileHits.slice(0, 20)) {
+    items.push({ kind: "文件", title: f.name, sub: f.path, run: () => { const p = state.projects.find((x) => x.id === project.id); if (p) void openFilePreview(p, f.path); } });
+  }
+  state.palette.items = items;
+  state.palette.index = 0;
+  if (!items.length) box.innerHTML = '<div class="hint">没有匹配的会话或文件</div>';
+  else renderPaletteResults();
+}
+
+function renderPaletteResults() {
+  const box = $("palette-results");
+  box.innerHTML = "";
+  state.palette.items.forEach((item, i) => {
+    const row = el("div", `palette-item${i === state.palette.index ? " active" : ""}`);
+    row.append(el("span", "pi-kind", item.kind), el("span", "pi-title", item.title), el("span", "pi-sub", item.sub));
+    row.onclick = () => {
+      closePalette();
+      item.run();
+    };
+    box.append(row);
+  });
+  box.querySelector(".palette-item.active")?.scrollIntoView({ block: "nearest" });
+}
 
 // ===== 会话搜索 =====
 // 侧栏顶部搜索框：防抖 400ms、关键词 ≥2 字符；点击结果打开会话，

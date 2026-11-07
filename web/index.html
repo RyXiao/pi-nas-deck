@@ -141,6 +141,14 @@
   <input type="file" id="fs-upload-input" multiple hidden>
   <input type="file" id="fs-upload-dir-input" multiple webkitdirectory hidden>
 
+  <!-- Ctrl+K 全局搜索面板（会话 + 文件名） -->
+  <div id="palette" class="hidden">
+    <div class="palette-box">
+      <input id="palette-input" placeholder="搜索会话或文件…（↑↓ 选择，Enter 打开，Esc 关闭）" autocomplete="off">
+      <div id="palette-results"></div>
+    </div>
+  </div>
+
   <div id="toast" class="hidden"></div>
 
   <!-- 上传进度卡：多文件/文件夹上传时常驻右下角，可取消 -->

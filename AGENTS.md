@@ -11,7 +11,8 @@
   ├─ lib/sessionManager.js  项目 CRUD、会话扫描（读 jsonl 头部 cwd 归属）、
   │                         进程池（空闲 30min 回收）、归档 meta（session-meta.json）、
   │                         全文搜索（/api/search：流式扫描，≤300 文件/10s 预算，
-  │                         每会话 ≤5 命中，按 mtime 倒序）
+  │                         每会话 ≤5 命中，按 mtime 倒序）、进程池 LRU 治理
+  │                         （PI_MAX_CONCURRENT，默认 4；超限挂起最久未活动，流式不挂）
   ├─ lib/piProcess.js       每会话 spawn 一个 `pi --mode rpc --approve --session-dir`
   │                         JSONL 自实现 LF 分帧（禁用 readline：U+2028 问题）
   ├─ lib/modelsConfig.js    models.json 读写、连接测试、pi 在线更新（npm i -g）

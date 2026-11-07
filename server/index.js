@@ -474,12 +474,28 @@ const routes = [
 
   // ===== 用量统计（聚合 pi 的 analytics/usage.jsonl，按日/月 × 模型 × 项目） =====
 
-  ["GET", "/api/usage", async (_body, query) => ({
-    json: await aggregateUsage(PI_AGENT_DIR, {
-      group: query.get("group") === "month" ? "month" : "day",
-      projects: sessions.listProjects(),
-    }),
-  })],
+  ["GET", "/api/usage", async (_body, query) => {
+    // 价格表：models.json 的 model.cost（USD/百万 token）→ {"provider/model": cost}
+    let providers = {};
+    try {
+      providers = readModels().providers || {};
+    } catch {
+      /* 配置缺失时无价格，只统计 token */
+    }
+    const costs = {};
+    for (const [pname, prov] of Object.entries(providers)) {
+      for (const m of prov.models || []) {
+        if (m?.id && m.cost && typeof m.cost === "object") costs[`${pname}/${m.id}`] = m.cost;
+      }
+    }
+    return {
+      json: await aggregateUsage(PI_AGENT_DIR, {
+        group: query.get("group") === "month" ? "month" : "day",
+        projects: sessions.listProjects(),
+        costs,
+      }),
+    };
+  }],
 
   // ===== MCP 配置（$PI_AGENT_DIR/mcp.json；改动对新会话生效，已开会话需关闭重开） =====
 
@@ -692,6 +708,51 @@ const routes = [
     files.sort((a, b) => b.mtimeMs - a.mtimeMs);
     return { json: { files, checked, truncated } };
   }],
+
+  // 文件名搜索（全库模糊匹配，供 Ctrl+K 面板；跳过点目录/依赖目录）
+  ["GET", "/api/fs/search", async (_body, query) => {
+    const project = sessions.getProject(String(query.get("project") || ""));
+    if (!project) return { status: 404, json: { error: "项目不存在" } };
+    const q = String(query.get("q") || "").trim().toLowerCase();
+    if (!q) return { json: { files: [], truncated: false } };
+    const skip = new Set([".git", "node_modules", ".pnd-ask", ".obsidian", "__pycache__"]);
+    const files = [];
+    let checked = 0;
+    let truncated = false;
+    const deadline = Date.now() + 3000;
+    const walk = async (dir, rel) => {
+      if (truncated) return;
+      let entries;
+      try {
+        entries = await fsp.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (files.length >= 100 || checked >= 20000 || Date.now() >= deadline) {
+          truncated = true;
+          return;
+        }
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          if (!skip.has(entry.name) && !entry.name.startsWith(".")) await walk(join(dir, entry.name), childRel);
+        } else {
+          checked++;
+          const lower = entry.name.toLowerCase();
+          const at = lower.indexOf(q);
+          if (at >= 0) files.push({ path: childRel, name: entry.name, score: at === 0 ? 0 : 1 });
+        }
+      }
+    };
+    await walk(resolve(project.path), "");
+    files.sort((a, b) => a.score - b.score || a.path.length - b.path.length);
+    return { json: { files: files.slice(0, 50), truncated } };
+  }],
+
+  // ===== 会话进程池（内存治理：查看/手动挂起） =====
+  ["GET", "/api/sessions/processes", () => ({ json: { processes: sessions.listProcesses(), limits: sessions.limits } })],
+
+  ["POST", "/api/sessions/suspend", (body) => ({ json: sessions.suspend(String(body?.key || "")) })],
 
   // ===== 系统 / pi 更新 =====
 
