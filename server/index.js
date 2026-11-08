@@ -11,7 +11,7 @@ import { extractDocxText } from "./lib/docx.js";
 import { convertPdfToMd } from "./lib/pdfConvert.js";
 import { syncBuiltinExtensions } from "./lib/extensions.js";
 import { readMcpConfig, writeMcpConfig } from "./lib/mcpConfig.js";
-import { getLatestPiVersion, getPiVersion, readModels, testConnection, updatePi, writeModels } from "./lib/modelsConfig.js";
+import { getLatestPiVersion, getPiVersion, readModels, sanitizeProviders, testConnection, updatePi, writeModels } from "./lib/modelsConfig.js";
 import { SessionManager } from "./lib/sessionManager.js";
 import { deleteSkill, getSkill, listSkills, saveSkill } from "./lib/skillsManager.js";
 import { aggregateUsage } from "./lib/usageStats.js";
@@ -59,6 +59,22 @@ if (auth.bootstrapPassword) {
   console.log("请尽快登录后在「设置 → 密码」中修改。");
   console.log("========================================");
 }
+
+// 启动自愈：历史上写过不完整的 cost 字段（v0.5.2~0.5.4b 的 bug）会让 pi 拒载
+// 整个 models.json（表现为「无可用模型」）。这里启动时比对一次，脏了就修正并回写。
+(() => {
+  try {
+    const cfg = readModels();
+    const before = JSON.stringify(cfg.providers || {});
+    const after = JSON.stringify(sanitizeProviders(cfg.providers || {}));
+    if (before !== after) {
+      writeModels(cfg);
+      console.log("[models] 已修复 models.json 中不完整的 cost 字段（否则 pi 会拒载全部模型）");
+    }
+  } catch (error) {
+    console.warn("[models] 启动自检失败（models.json 可能损坏）:", error.message);
+  }
+})();
 
 const sessions = new SessionManager(join(DATA_DIR, "projects.json"), SESSION_DIR);
 
@@ -754,6 +770,27 @@ const routes = [
 
   ["POST", "/api/sessions/suspend", (body) => ({ json: sessions.suspend(String(body?.key || "")) })],
 
+  // 重启 agent 进程（重读 models.json/mcp.json/skills）；key 缺省 = 全部重启
+  ["POST", "/api/sessions/restart", (body) => ({ json: sessions.restartProcesses(String(body?.key || "")) })],
+
+  // 模型配置健康检查：区分「models.json 坏了 / 配置为空」与「pi 进程问题」
+  ["GET", "/api/models/health", () => {
+    try {
+      const cfg = readModels();
+      const providers = Object.entries(cfg.providers || {});
+      let models = 0;
+      const detail = providers.map(([name, p]) => {
+        const list = (p?.models || []).filter((m) => m?.id);
+        models += list.length;
+        return { name, models: list.length, hasBaseUrl: !!p?.baseUrl, hasKey: !!p?.apiKey, api: p?.api || null };
+      });
+      return { json: { ok: true, providerCount: providers.length, modelCount: models, providers: detail, modelsPath: join(PI_AGENT_DIR, "models.json") } };
+    } catch (error) {
+      // JSON 解析失败等：models.json 已损坏
+      return { json: { ok: false, error: error.message, modelsPath: join(PI_AGENT_DIR, "models.json") } };
+    }
+  }],
+
   // ===== 系统 / pi 更新 =====
 
   ["GET", "/api/system", async () => {
@@ -1113,8 +1150,26 @@ wss.on("connection", (ws) => {
         ws.send(JSON.stringify({ type: "attached", key, state }));
       } else if (msg.type === "rpc") {
         const entry = subscriptions.get(msg.key);
-        const proc = entry?.proc || sessions.get(msg.key);
-        if (!proc) return ws.send(JSON.stringify({ type: "rpc-result", id: msg.id, ok: false, error: "会话未打开" }));
+        let proc = entry?.proc;
+        // 进程可能已被挂起/回收/重启（v0.5.3 引入 LRU 挂起后常见）：
+        // 旧代码 `entry?.proc || sessions.get()` 会一直拿到已关闭的 proc，
+        // 导致所有 RPC（包括 get_available_models）永久失败 → 前端静默隐藏“模型下拉”。
+        if (!proc || proc.closed) {
+          const fresh = sessions.get(msg.key);
+          if (fresh) {
+            if (entry?.proc && entry.handler) {
+              try {
+                entry.proc.off("event", entry.handler);
+              } catch {
+                /* 旧进程已销毁 */
+              }
+              fresh.on("event", entry.handler); // 事件重新绑到新进程
+            }
+            if (entry) entry.proc = fresh;
+            proc = fresh;
+          }
+        }
+        if (!proc || proc.closed) return ws.send(JSON.stringify({ type: "rpc-result", id: msg.id, ok: false, error: "会话未打开（进程已挂起，请重新打开会话）" }));
         try {
           const data = await proc.request(msg.command, msg.timeoutMs);
           ws.send(JSON.stringify({ type: "rpc-result", id: msg.id, ok: true, data }));
@@ -1124,8 +1179,9 @@ wss.on("connection", (ws) => {
       } else if (msg.type === "ui-response") {
         // 扩展 UI 子协议：客户端回答（不等 pi 回响应，单向写 stdin）
         const entry = subscriptions.get(msg.key);
-        const proc = entry?.proc || sessions.get(msg.key);
-        if (proc) proc.send({ type: "extension_ui_response", ...msg.payload });
+        // 同 RPC 分支：entry.proc 可能是被挂起/重启后的已关闭进程
+        const proc = entry?.proc && !entry.proc.closed ? entry.proc : sessions.get(msg.key);
+        if (proc && !proc.closed) proc.send({ type: "extension_ui_response", ...msg.payload });
       } else if (msg.type === "detach") {
         const entry = subscriptions.get(msg.key);
         if (entry) entry.proc.off("event", entry.handler);

@@ -131,7 +131,16 @@ function connectWs() {
       const pending = state.rpcPending.get(msg.id);
       if (pending) {
         state.rpcPending.delete(msg.id);
-        msg.ok ? pending.resolve(msg.data) : pending.reject(new Error(msg.error));
+        if (msg.ok) pending.resolve(msg.data);
+        else {
+          // 进程被挂起/回收后 RPC 会报“会话未打开”——自动重挂一次，避免界面卡死
+          if (String(msg.error || "").includes("进程已挂起") && !state.reattaching && state.activeSession && state.activeProject) {
+            state.reattaching = true;
+            toast("会话进程已挂起，正在自动重连…");
+            attachSession(state.activeProject, state.activeSession, { silent: true }).finally(() => setTimeout(() => (state.reattaching = false), 3000));
+          }
+          pending.reject(new Error(msg.error));
+        }
       }
     } else if (msg.type === "broadcast") {
       if (msg.channel === "wechat:status" && state.settingsTab === "wechat") renderSettings();
@@ -502,6 +511,7 @@ async function attachSession(project, session, opts = {}) {
 async function onAttached(rpcState) {
   if (rpcState?.sessionFile) state.activeSession = { ...(state.activeSession || {}), sessionFile: rpcState.sessionFile };
   state.currentModelId = rpcState?.model?.id || null;
+  state.currentModelProvider = rpcState?.model?.provider || null;
   try {
     const messages = await rpc({ type: "get_messages" });
     renderHistory(messages?.messages || []);
@@ -511,29 +521,52 @@ async function onAttached(rpcState) {
   // 模型下拉与命令菜单都是增强能力，失败不阻断聊天
   loadModelSelect().catch(() => {});
   loadCommands().catch(() => {});
+  // 自检：会话就绪后 3 秒确认下拉状态（诊断“下拉不显示”类问题）
+  setTimeout(() => {
+    const sel = $("model-select");
+    if (sel.classList.contains("hidden")) {
+      console.warn("[model-select] 仍未显示：models<2 或加载失败", { currentModel: state.currentModelId, wsKey: !!state.wsKey });
+    }
+  }, 3000);
 }
 
 // ===== 模型切换 =====
 // 有 ≥2 个可用模型时显示下拉，切换走 set_model（会话级，不影响其他会话）。
 async function loadModelSelect() {
   const select = $("model-select");
-  const data = await rpc({ type: "get_available_models" });
-  const models = data?.models || [];
-  if (models.length < 2) {
-    select.classList.add("hidden");
-    return;
+  try {
+    const data = await rpc({ type: "get_available_models" });
+    // 过滤脏数据（缺 provider/id）：否则 option.value 会变成 "undefined\\0undefined"
+    const models = (data?.models || []).filter((m) => m && m.id && m.provider);
+    if (!models.length) {
+      // 不再静默隐藏：保留下拉并显示可读状态
+      select.innerHTML = '<option value="">（无可用模型，检查设置→模型）</option>';
+      select.classList.remove("hidden");
+      select.disabled = true;
+      return;
+    }
+    select.disabled = false;
+    select.innerHTML = "";
+    for (const model of models) {
+      const option = document.createElement("option");
+      option.value = `${model.provider}\u0000${model.id}`;
+      // 选项文案带服务商名（同名模型跨服务商可区分）；完整信息仍在 title
+      option.textContent = `${model.name || model.id} · ${model.provider}`;
+      option.title = `${model.provider}/${model.id}`;
+      // 选中态必须同时比 provider + id（同名模型跨服务商时不能只比 id）
+      if (model.id === state.currentModelId && (!state.currentModelProvider || model.provider === state.currentModelProvider)) option.selected = true;
+      select.append(option);
+    }
+    // 单模型时也显示（不再因为 <2 而隐藏，避免“下拉不见了”找不到原因）
+    select.classList.remove("hidden");
+  } catch (error) {
+    // 之前这里被 .catch(() => {}) 完全吞掉，下拉不出现也无任何线索
+    select.innerHTML = '<option value="">（模型加载失败，可重开会话）</option>';
+    select.classList.remove("hidden");
+    select.disabled = true;
+    console.warn("[model-select] 加载失败:", error);
+    toast(`模型列表加载失败：${error.message}（可点设置→模型 重启 Agent 后重试）`, true);
   }
-  select.innerHTML = "";
-  for (const model of models) {
-    const option = document.createElement("option");
-    option.value = `${model.provider}\u0000${model.id}`;
-    // 选项文案带服务商名（同名模型不同服务商可区分）；完整信息仍在 title
-    option.textContent = `${model.name || model.id} · ${model.provider}`;
-    option.title = `${model.provider}/${model.id}`;
-    if (model.id === state.currentModelId) option.selected = true;
-    select.append(option);
-  }
-  select.classList.remove("hidden");
 }
 
 $("model-select").addEventListener("change", async (e) => {
@@ -541,6 +574,7 @@ $("model-select").addEventListener("change", async (e) => {
   try {
     const model = await rpc({ type: "set_model", provider, modelId });
     state.currentModelId = model?.id || modelId;
+    state.currentModelProvider = model?.provider || provider;
     toast(`已切换到 ${model?.name || modelId}`);
   } catch (error) {
     toast(`切换失败: ${error.message}`, true);
@@ -1475,6 +1509,31 @@ async function renderModelsTab(body) {
 
   panel.append(el("p", "hint", "管理 pi 的 models.json：添加 OpenAI 兼容端点（中转站 / Ollama / vLLM / 官方 API）。apiKey 建议用 $环境变量 引用，或直接填明文（存于容器卷）。保存后新会话即生效。"));
 
+  // 重启 agent：pi 只在进程启动时读 models.json，新加模型必须重启进程才可见
+  const restartCard = el("div", "card");
+  restartCard.innerHTML = "<h3>🔄 重启 Agent 进程</h3>";
+  restartCard.append(el("p", "hint", "pi 只在进程启动时读取 models.json / mcp.json / skills。新增模型后点这里重启所有空闲的会话进程（流式中的会跳过，不打断任务）；重启后再点开会话，新模型就出现在下拉里了。"));
+  const restartBtn = el("button", "primary", "立即重启全部空闲会话进程");
+  restartBtn.onclick = async () => {
+    restartBtn.disabled = true;
+    const old = restartBtn.textContent;
+    restartBtn.textContent = "重启中…";
+    try {
+      const res = await api("/api/sessions/restart", { method: "POST", body: JSON.stringify({}) });
+      const msg = res.restarted || res.skipped ? `已重启 ${res.restarted} 个进程${res.skipped ? `，跳过 ${res.skipped} 个运行中` : ""}；重开会话即可看到新模型` : "当前没有运行中的会话进程（新开会话直接用最新配置）";
+      toast(msg, false);
+      restartCard.querySelector(".hint:last-of-type")?.remove();
+      restartCard.append(el("p", "hint", msg));
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      restartBtn.disabled = false;
+      restartBtn.textContent = old;
+    }
+  };
+  restartCard.append(restartBtn);
+  panel.append(restartCard);
+
   const list = el("div", "");
   panel.append(list);
 
@@ -1556,6 +1615,14 @@ async function renderModelsTab(body) {
           pickBox.append(label);
         }
         if (fresh.length) {
+          // 全选 / 全不选（只挑几个模型时快速操作）
+          const selRow = el("div", "row");
+          const allBtn = el("button", "", "全选");
+          const noneBtn = el("button", "", "全不选");
+          allBtn.onclick = () => pickBox.querySelectorAll('input[type="checkbox"]').forEach((c) => (c.checked = true));
+          noneBtn.onclick = () => pickBox.querySelectorAll('input[type="checkbox"]').forEach((c) => (c.checked = false));
+          selRow.append(allBtn, noneBtn);
+          pickBox.append(selRow);
           const addBtn2 = el("button", "primary", "添加勾选的模型");
           addBtn2.style.marginTop = "6px";
           addBtn2.onclick = () => {
@@ -1660,6 +1727,7 @@ async function renderModelsTab(body) {
       ["in", "输入 $/M"],
       ["out", "输出 $/M"],
       ["cacheRead", "缓存读 $/M"],
+      ["cacheWrite", "缓存写 $/M"],
     ];
     const priceInputs = nums.map(([key, ph]) => {
       const inp = el("input", "model-price");
@@ -1667,7 +1735,7 @@ async function renderModelsTab(body) {
       inp.step = "0.001";
       inp.min = "0";
       inp.placeholder = ph;
-      inp.title = `${ph}（USD/百万 token，留空 = 未配价）`;
+      inp.title = `${ph}（USD/百万 token）。pi 要求 4 个价格字段齐全，留空会自动沿用输入价`;
       const v = model.cost?.[key];
       if (typeof v === "number") inp.value = String(v);
       inp.oninput = () => {
@@ -1783,6 +1851,30 @@ function sumCostOf(rows) {
     }
   }
   return known ? sum : null;
+}
+
+/** 无可用模型时自检 models.json，把“到底哪一侧坏了”说清楚（不再只丢一句提示）。 */
+async function explainNoModels(select, rpcData) {
+  try {
+    const h = await api("/api/models/health");
+    console.warn("[model-select] RPC 返回模型数 =", (rpcData?.models || []).length, "| models.json 健康度 =", h);
+    if (!h.ok) {
+      select.title = `models.json 解析失败：${h.error}（路径 ${h.modelsPath}）`;
+      toast(`models.json 已损坏：${h.error}。请到设置→模型 重新保存一次`, true);
+      return;
+    }
+    if (h.modelCount === 0) {
+      select.title = "models.json 里没有有效模型（每个供应商下需至少一个模型 ID）";
+      toast(`models.json 配置了 ${h.providerCount} 个供应商但 0 个有效模型——请在设置→模型 填模型 ID 并保存`, true);
+      return;
+    }
+    // 配置里有模型，但 pi 返回 0：进程未读到配置
+    const detail = h.providers.map((p) => `${p.name}(${p.models})`).join("、");
+    select.title = `models.json 有 ${h.modelCount} 个模型（${detail}），但当前 pi 进程返回 0——需重启 Agent 进程`;
+    toast(`models.json 有 ${h.modelCount} 个模型，但 pi 进程读到 0 个——请点设置→模型→「重启 Agent 进程」`, true);
+  } catch (error) {
+    console.warn("[model-select] 健康检查失败:", error);
+  }
 }
 
 function fmtTokens(n) {
@@ -2415,6 +2507,24 @@ async function renderSystemTab(body) {
       const data = await api("/api/sessions/processes");
       procBox.innerHTML = "";
       procBox.append(el("p", "hint", `上限 ${data.limits.maxConcurrent} 个并发进程（超过时按最久未活动自动挂起，流式中的不挂）；空闲 ${Math.round(data.limits.idleKillMs / 60000)} 分钟回收。`));
+      // 手动重启全部（重置配置读取：新模型/MCP/Skills 生效）
+      const rRow = el("div", "row");
+      const rBtn = el("button", "", "🔄 重启全部空闲进程");
+      rBtn.title = "结束空闲进程（不碰会话文件），重开会话时 pi 重读 models.json/mcp.json/skills";
+      rBtn.onclick = async () => {
+        rBtn.disabled = true;
+        try {
+          const res = await api("/api/sessions/restart", { method: "POST", body: JSON.stringify({}) });
+          toast(`已重启 ${res.restarted} 个${res.skipped ? `，跳过 ${res.skipped} 个运行中` : ""}`);
+          void loadProcs();
+        } catch (error) {
+          toast(error.message, true);
+        } finally {
+          rBtn.disabled = false;
+        }
+      };
+      rRow.append(rBtn);
+      procBox.append(rRow);
       if (!data.processes.length) return procBox.append(el("p", "hint", "当前没有运行的会话进程。"));
       const table = el("table", "simple");
       table.innerHTML = "<tr><th>会话</th><th>状态</th><th>空闲</th><th></th></tr>";
@@ -2432,6 +2542,16 @@ async function renderSystemTab(body) {
           void loadProcs();
         };
         td.append(btn);
+        const rBtn2 = el("button", "", "重启");
+        rBtn2.disabled = p.streaming;
+        rBtn2.title = p.streaming ? "运行中不能重启" : "重启该会话进程（重读配置）";
+        rBtn2.style.marginLeft = "6px";
+        rBtn2.onclick = async () => {
+          const res = await api("/api/sessions/restart", { method: "POST", body: JSON.stringify({ key: p.key }) });
+          toast(res.restarted ? "已重启，重开会话生效" : `未重启：运行中`, !res.restarted);
+          void loadProcs();
+        };
+        td.append(rBtn2);
         tr.append(td);
         table.append(tr);
       }

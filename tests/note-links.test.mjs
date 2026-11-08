@@ -97,6 +97,10 @@ assert(app.includes("renderSubagentCard") && app.includes("subagent-card"), "sub
 assert(html.includes('id="palette"') && app.includes("runPaletteSearch") && server.includes("/api/fs/search"), "Ctrl+K 全局搜索（会话+文件）");
 const smSrc = readFileSync(join(import.meta.dirname, "..", "server", "lib", "sessionManager.js"), "utf8");
 assert(smSrc.includes("_enforceLimit") && smSrc.includes("MAX_CONCURRENT") && server.includes("/api/sessions/processes"), "进程池 LRU 治理 + 设置页可见");
+
+// 17. v0.5.4：重启 agent（新模型生效）/ 模型列表全选全不选
+assert(smSrc.includes("restartProcesses") && server.includes("/api/sessions/restart") && app.includes("重启 Agent 进程"), "重启 agent 链路（模型新配置生效）");
+assert(app.includes('"全选"') && app.includes('"全不选"'), "模型列表全选/全不选");
 // v0.4.3 修：模型选项值不得再用 NUL 分隔（innerHTML 解析会吞掉 NUL → id 为空 → 校验失败）
 assert(app.includes("modelChoices[Number(modelSel.value)]"), "模型选项用数组下标（非 NUL 分隔）");
 assert(!app.includes("escapeHtml(pname)}\\u0000"), "无 NUL 分隔的选项构建残留");

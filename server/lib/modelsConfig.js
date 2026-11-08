@@ -22,7 +22,49 @@ export function writeModels(config) {
   if (!config || typeof config !== "object" || typeof config.providers !== "object") {
     throw new Error("非法配置结构");
   }
-  writeJson(MODELS_PATH, { $schema: MODELS_SCHEMA, providers: config.providers });
+  writeJson(MODELS_PATH, { $schema: MODELS_SCHEMA, providers: sanitizeProviders(config.providers) });
+}
+
+/**
+ * 校验/修复 providers：核心是 cost 字段。
+ * pi 要求 cost 必须含全部 4 个数值字段（input/output/cacheRead/cacheWrite），
+ * 缺任何一个都会让**整个 models.json 失效 → get_available_models 返回 0 个模型**
+ * （v0.5.2~0.5.4b 的真实 bug：UI 只给了 3 个价格输入框，填了就炸）。
+ * 修复策略：有 input 或 output 就补齐缺失项（cache* 缺省回退到 input 价）；
+ * 两者都没有则直接去掉 cost（等于“未配价”），绝不写出会让 pi 拒载的配置。
+ */
+export function sanitizeProviders(providers) {
+  const out = {};
+  for (const [name, prov] of Object.entries(providers || {})) {
+    const p = { ...prov };
+    if (Array.isArray(p.models)) {
+      p.models = p.models.map((m) => {
+        if (!m || typeof m !== "object") return m;
+        const model = { ...m };
+        if (!model.cost || typeof model.cost !== "object") {
+          delete model.cost;
+          return model;
+        }
+        const num = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : null);
+        const input = num(model.cost.input);
+        const output = num(model.cost.output);
+        if (input === null && output === null) {
+          delete model.cost; // 没有任何有效价格 → 视为未配价
+          return model;
+        }
+        const base = input ?? output ?? 0;
+        model.cost = {
+          input: input ?? base,
+          output: output ?? base,
+          cacheRead: num(model.cost.cacheRead) ?? base,
+          cacheWrite: num(model.cost.cacheWrite) ?? base,
+        };
+        return model;
+      });
+    }
+    out[name] = p;
+  }
+  return out;
 }
 
 /**

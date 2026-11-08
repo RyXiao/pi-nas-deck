@@ -64,7 +64,23 @@ assert(r2.suspended === true && !mgr.processes.has("fresh"), "挂起空闲进程
 const list = mgr.listProcesses();
 assert(Array.isArray(list) && list.every((p) => typeof p.idleMs === "number" && typeof p.streaming === "boolean"), "进程池快照字段完整");
 
+// restartProcesses：空闲的结束、流式的跳过、指定 key 只动一个
+const mgr3 = new SessionManager(projectsPath, join(dir, "sessions3"));
+const t0 = Date.now();
+mgr3.processes.set("a", fakeProc(false, t0, "a"));
+mgr3.processes.set("b", fakeProc(true, t0, "b"));
+mgr3.processes.set("c", fakeProc(false, t0, "c"));
+const rAll = mgr3.restartProcesses();
+assert(rAll.restarted === 2 && rAll.skipped === 1, `全部重启：重启 2 跳过 1（实际 ${rAll.restarted}/${rAll.skipped}）`);
+assert(mgr3.processes.has("b") && !mgr3.processes.has("a") && !mgr3.processes.has("c"), "流式进程保留，空闲进程被结束");
+mgr3.processes.set("a", fakeProc(false, t0, "a"));
+const rOne = mgr3.restartProcesses("a");
+assert(rOne.restarted === 1 && mgr3.processes.has("b"), "指定 key 只重启一个");
+const rStream = mgr3.restartProcesses("b");
+assert(rStream.restarted === 0 && rStream.skipped === 1 && mgr3.processes.has("b"), "指定流式进程：跳过不杀");
+
 clearInterval(mgr._sweeper);
 clearInterval(mgr2._sweeper);
+clearInterval(mgr3._sweeper);
 rmSync(dir, { recursive: true, force: true });
 console.log("\nPROCESS POOL TESTS PASSED");

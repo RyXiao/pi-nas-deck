@@ -142,6 +142,28 @@ export class SessionManager {
     return { closed: true, running: false };
   }
 
+  /**
+   * 重启全部会话进程（或指定 key）：结束进程但不碰会话文件，
+   * 重新打开会话时 pi 会重读 models.json / mcp.json / skills——
+   * 这就是「让新加的模型生效」的正规手段（pi 只在进程启动时读配置）。
+   * 流式中的进程跳过（不打断正在跑的任务），返回实际重启/跳过数量。
+   */
+  restartProcesses(onlyKey = "") {
+    const restarted = [];
+    const skipped = [];
+    for (const [key, proc] of [...this.processes]) {
+      if (onlyKey && key !== onlyKey) continue;
+      if (proc.streaming) {
+        skipped.push(key);
+        continue;
+      }
+      proc.kill();
+      this.processes.delete(key);
+      restarted.push(key);
+    }
+    return { restarted: restarted.length, skipped: skipped.length, keys: restarted };
+  }
+
   _walk(dir, onFile) {
     let entries;
     try {
