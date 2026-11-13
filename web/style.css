@@ -609,6 +609,18 @@ mark { background: rgba(217,164,65,.25); color: #ffd76a; border-radius: 3px; pad
 .sa-task { font-size: 12px; color: var(--muted); margin: 4px 0; }
 .sa-log { font-family: var(--mono); font-size: 11px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; max-height: 180px; overflow: auto; white-space: pre-wrap; margin-top: 4px; }
 
+/* ===== 终端视图 ===== */
+#term-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#term-header { padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+#term-banner { padding: 6px 16px; background: rgba(217, 164, 65, .1); color: var(--warn); border-bottom: 1px solid var(--border); font-size: 12px; }
+#term-output { flex: 1; overflow: auto; background: var(--code-bg); padding: 10px 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+#term-output .term-out { color: var(--fg); }
+#term-output .term-err { color: var(--danger); }
+#term-output .term-sys { color: var(--muted); }
+#term-form { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--bg2); }
+#term-form .term-prompt { color: var(--ok); font-family: var(--mono); }
+#term-input { flex: 1; font-family: var(--mono); font-size: 13px; }
+
 /* ===== toast ===== */
 #toast {
   position: fixed;

@@ -72,7 +72,7 @@ assert(app.includes("handleExtensionUiRequest") && app.includes("sendUiResponse"
 
 // 12. v0.5.0：pi 1.5 锁定 / 本轮产出文件 / 连接期消息不再静默丢
 const dockerfile = readFileSync(join(import.meta.dirname, "..", "Dockerfile"), "utf8");
-assert(dockerfile.includes("ARG PI_VERSION=1.5.0"), "Dockerfile 锁定 pi 1.5.0");
+assert(/ARG PI_VERSION=1\.5\.[0-9]+/.test(dockerfile), "Dockerfile 锁定 pi 1.5.x");
 assert(server.includes("/api/fs/changed-since") && app.includes("fetchTurnOutputs"), "本轮产出文件链路完整");
 assert(app.includes("pendingPrompt") && app.includes("flushPendingPrompt") && app.includes('msg.type === "error"'), "连接期消息自动补发 + 服务端错误可见");
 

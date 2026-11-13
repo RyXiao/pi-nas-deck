@@ -32,6 +32,8 @@ export class PiProcess extends EventEmitter {
     this.stderrTail = [];
 
     const args = ["--mode", "rpc", "--approve"];
+    // 默认模型：仅在新建会话时生效（历史会话保留其原模型）
+    if (opts.model?.provider && opts.model?.id) args.push("--model", `${opts.model.provider}/${opts.model.id}`);
     if (opts.sessionDir) args.push("--session-dir", opts.sessionDir);
     if (opts.sessionFile) args.push("--session", opts.sessionFile);
     if (opts.name) args.push("--name", opts.name);

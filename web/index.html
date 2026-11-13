@@ -27,6 +27,7 @@
         <span class="logo">🥧 PiNasDeck</span>
         <div class="header-actions">
           <button id="theme-btn" class="icon-btn" title="切换白天/夜间模式">🌞</button>
+          <button id="term-btn" class="icon-btn" title="终端（容器内 bash）">⌨</button>
           <button id="fs-toggle-btn" class="icon-btn" title="文件树">📁</button>
           <button id="settings-btn" class="icon-btn" title="设置">⚙️</button>
         </div>
@@ -82,6 +83,25 @@
           <p class="muted">左侧选择项目和会话，或点「＋ 新会话」开始。<br>先到 ⚙️ 设置里配置模型 API 和微信。</p>
           <button id="welcome-new-btn" class="primary">🚀 开始新会话</button>
         </div>
+      </section>
+
+      <!-- 终端视图（容器内 bash） -->
+      <section id="term-view" class="hidden">
+        <header id="term-header">
+          <span>⌨ 终端（容器内 bash）</span>
+          <div class="chat-header-actions">
+            <span class="badge" id="term-cwd"></span>
+            <button id="term-clear-btn" class="icon-btn" title="清屏">🧹</button>
+            <button id="term-restart-btn" class="icon-btn" title="重启 shell">⟳</button>
+            <button id="term-close-btn" class="icon-btn" title="关闭">✕</button>
+          </div>
+        </header>
+        <div id="term-banner" class="hint">权限与本应用相同（容器内）。无 PTY：vim/htop 等 TUI 不可用；支持 git/npm/ls/cat/pi 等普通命令。</div>
+        <div id="term-output"></div>
+        <form id="term-form">
+          <span class="term-prompt">$</span>
+          <input id="term-input" placeholder="输入命令，Enter 执行（↑↓ 历史）" autocomplete="off" spellcheck="false">
+        </form>
       </section>
 
       <!-- 设置视图 -->

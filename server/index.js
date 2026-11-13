@@ -1,6 +1,7 @@
 // PiNasDeck 服务端：HTTP API + WebSocket 桥 + 静态前端。
 import { closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { promises as fsp } from "node:fs";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,7 @@ import { Auth } from "./lib/auth.js";
 import { extractDocxText } from "./lib/docx.js";
 import { convertPdfToMd } from "./lib/pdfConvert.js";
 import { syncBuiltinExtensions } from "./lib/extensions.js";
+import { readJson, writeJson } from "./lib/store.js";
 import { readMcpConfig, writeMcpConfig } from "./lib/mcpConfig.js";
 import { getLatestPiVersion, getPiVersion, readModels, sanitizeProviders, testConnection, updatePi, writeModels } from "./lib/modelsConfig.js";
 import { SessionManager } from "./lib/sessionManager.js";
@@ -76,7 +78,26 @@ if (auth.bootstrapPassword) {
   }
 })();
 
-const sessions = new SessionManager(join(DATA_DIR, "projects.json"), SESSION_DIR);
+// ===== 全局偏好（默认模型等）：DATA_DIR/prefs.json =====
+const PREFS_PATH = join(DATA_DIR, "prefs.json");
+const prefs = readJson(PREFS_PATH, { defaultModel: null });
+function getPrefs() {
+  return { defaultModel: prefs.defaultModel || null };
+}
+function setPrefs(patch) {
+  if ("defaultModel" in patch) {
+    const v = patch.defaultModel;
+    if (v === null) prefs.defaultModel = null;
+    else if (v && typeof v.provider === "string" && typeof v.id === "string" && v.provider && v.id) prefs.defaultModel = { provider: v.provider, id: v.id };
+    else throw new Error("defaultModel 格式应为 {provider, id} 或 null");
+  }
+  writeJson(PREFS_PATH, prefs);
+  return getPrefs();
+}
+
+const sessions = new SessionManager(join(DATA_DIR, "projects.json"), SESSION_DIR, {
+  getDefaultModel: () => getPrefs().defaultModel,
+});
 
 /** 广播给所有已认证 WS 客户端（微信状态等全局事件）。 */
 const wsClients = new Set();
@@ -791,6 +812,18 @@ const routes = [
     }
   }],
 
+  // ===== 偏好设置（默认模型） =====
+
+  ["GET", "/api/prefs", () => ({ json: getPrefs() })],
+
+  ["PUT", "/api/prefs", (body) => {
+    try {
+      return { json: setPrefs(body || {}) };
+    } catch (error) {
+      return { status: 400, json: { error: error.message } };
+    }
+  }],
+
   // ===== 系统 / pi 更新 =====
 
   ["GET", "/api/system", async () => {
@@ -1124,8 +1157,45 @@ wss.on("connection", (ws) => {
   /** 本连接订阅：key -> {proc, handler} */
   const subscriptions = new Map();
 
+  /**
+   * 网页终端：每条 WS 连接一个独立 bash 进程（无 PTY 依赖，ARM 友好）。
+   * 能力边界：可跑普通命令（ls/git/cat/npm/pi …）；不支持需要真 TTY 的 TUI（vim/htop）。
+   * 权限：与本应用同权（容器内 root）——已有 pi 的 bash 工具等价，且 WS 已 token 鉴权。
+   */
+  let term = null;
+  const termSend = (kind, text) => {
+    if (ws.readyState === 1) ws.send(JSON.stringify({ type: "term-output", kind, text }));
+  };
+  const openTerm = () => {
+    if (term && !term.killed) return;
+    term = spawn("bash", [], {
+      cwd: WORKSPACE_ROOT,
+      env: { ...process.env, TERM: "dumb", PS1: "$ ", CLICOLOR: "0", NO_COLOR: "1" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const pipe = (kind) => (chunk) => termSend(kind, chunk.toString("utf8"));
+    term.stdout.on("data", pipe("out"));
+    term.stderr.on("data", pipe("err"));
+    term.on("exit", (code) => {
+      termSend("sys", `\n[进程已退出，code=${code}]\n`);
+      term = null;
+    });
+    termSend("sys", `PiNasDeck 终端 — cwd=${WORKSPACE_ROOT}（bash，无 PTY：不支持 vim/htop 等 TUI）\n`);
+  };
+  const closeTerm = () => {
+    if (term && !term.killed) {
+      try {
+        term.kill("SIGTERM");
+      } catch {
+        /* 已退出 */
+      }
+    }
+    term = null;
+  };
+
   ws.on("close", () => {
     wsClients.delete(ws);
+    closeTerm(); // 连接断开：回收该连接的终端 shell
     // 进程不随连接关闭：刷新页面后会话仍在；空闲超时由 SessionManager 回收
     for (const { proc, handler } of subscriptions.values()) proc.off("event", handler);
     subscriptions.clear();
@@ -1182,6 +1252,24 @@ wss.on("connection", (ws) => {
         // 同 RPC 分支：entry.proc 可能是被挂起/重启后的已关闭进程
         const proc = entry?.proc && !entry.proc.closed ? entry.proc : sessions.get(msg.key);
         if (proc && !proc.closed) proc.send({ type: "extension_ui_response", ...msg.payload });
+      } else if (msg.type === "term-open") {
+        openTerm();
+      } else if (msg.type === "term-input") {
+        if (!term || term.killed) openTerm();
+        const text = String(msg.text ?? "");
+        if (term && !term.killed) term.stdin.write(text.endsWith("\n") ? text : text + "\n");
+      } else if (msg.type === "term-signal") {
+        // Ctrl+C 等：无 PTY 时直接对进程组发信号后重建 shell
+        if (term && !term.killed) {
+          try {
+            term.kill("SIGINT");
+          } catch {
+            /* ignore */
+          }
+        }
+      } else if (msg.type === "term-close") {
+        closeTerm();
+        termSend("sys", "[终端已关闭]\n");
       } else if (msg.type === "detach") {
         const entry = subscriptions.get(msg.key);
         if (entry) entry.proc.off("event", entry.handler);

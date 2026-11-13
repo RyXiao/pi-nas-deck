@@ -122,6 +122,9 @@ function connectWs() {
     else if (msg.type === "attached") {
       state.wsKey = msg.key;
       void onAttached(msg.state).then(flushPendingPrompt).catch(() => {});
+    } else if (msg.type === "term-output") {
+      if (!$("term-view").classList.contains("hidden")) termAppend(msg.text || "", msg.kind);
+      else state.term.pending = (state.term.pending || "") + (msg.text || "");
     } else if (msg.type === "extension_ui_request") {
       handleExtensionUiRequest(msg);
     } else if (msg.type === "error") {
@@ -1508,6 +1511,42 @@ async function renderModelsTab(body) {
   const panel = el("div", "panel");
 
   panel.append(el("p", "hint", "管理 pi 的 models.json：添加 OpenAI 兼容端点（中转站 / Ollama / vLLM / 官方 API）。apiKey 建议用 $环境变量 引用，或直接填明文（存于容器卷）。保存后新会话即生效。"));
+
+  // 默认模型：新开会话默认用这个（历史会话不变）
+  const prefs = await api("/api/prefs").catch(() => ({ defaultModel: null }));
+  const defCard = el("div", "card");
+  defCard.innerHTML = "<h3>⭐ 默认模型</h3>";
+  defCard.append(el("p", "hint", "新建会话时默认选中的模型（已存在的历史会话保留自己原来的模型）。改完对新会话生效。"));
+  const defSel = el("select", "");
+  {
+    const opts = ['<option value="">（不设置，用 pi 默认）</option>'];
+    const choices = [];
+    for (const [pname, prov] of Object.entries(providers)) {
+      for (const m of prov.models || []) {
+        if (!m.id) continue;
+        choices.push({ provider: pname, id: m.id });
+        opts.push(`<option value="${choices.length - 1}">${escapeHtml(m.name || m.id)} · ${escapeHtml(pname)}/${escapeHtml(m.id)}</option>`);
+      }
+    }
+    defSel.innerHTML = opts.join("");
+    defSel._choices = choices;
+    if (prefs.defaultModel) {
+      const idx = choices.findIndex((c) => c.provider === prefs.defaultModel.provider && c.id === prefs.defaultModel.id);
+      if (idx >= 0) defSel.value = String(idx);
+    }
+  }
+  const defSave = el("button", "primary", "保存默认模型");
+  defSave.onclick = async () => {
+    try {
+      const v = defSel.value === "" ? null : defSel._choices[Number(defSel.value)] || null;
+      await api("/api/prefs", { method: "PUT", body: JSON.stringify({ defaultModel: v }) });
+      toast(v ? `默认模型已设为 ${v.provider}/${v.id}（新会话生效）` : "已清除默认模型");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  };
+  defCard.append(defSel, defSave);
+  panel.append(defCard);
 
   // 重启 agent：pi 只在进程启动时读 models.json，新加模型必须重启进程才可见
   const restartCard = el("div", "card");
@@ -4078,6 +4117,81 @@ function renderPaletteResults() {
   });
   box.querySelector(".palette-item.active")?.scrollIntoView({ block: "nearest" });
 }
+
+// ===== 终端（容器内 bash；无 PTY） =====
+// WS 消息：term-open / term-input / term-signal / term-close ↔ term-output
+state.term = { opened: false, history: [], histIdx: -1 };
+
+function stripAnsi(s) {
+  // 去常见 SGR/控制序列（无 PTY 也偶有色码）
+  return s.replace(/\u001b\[[0-9;?]*[a-zA-Z]/g, "").replace(/\u001b\][^\u0007]*\u0007/g, "");
+}
+
+function termAppend(text, kind) {
+  const box = $("term-output");
+  const span = el("span", kind === "err" ? "term-err" : kind === "sys" ? "term-sys" : "term-out");
+  span.textContent = stripAnsi(text);
+  box.append(span);
+  box.scrollTop = box.scrollHeight;
+}
+
+function openTermView() {
+  $("chat-view").classList.add("hidden");
+  $("welcome-view").classList.add("hidden");
+  $("settings-view").classList.add("hidden");
+  $("file-view").classList.add("hidden");
+  $("term-view").classList.remove("hidden");
+  $("term-cwd").textContent = state.projects.length ? "工作区" : "";
+  if (!state.term.opened) {
+    state.term.opened = true;
+    if (state.ws?.readyState === 1) state.ws.send(JSON.stringify({ type: "term-open" }));
+    else termAppend("连接未就绪，请稍候重试…\n", "sys");
+  }
+  setTimeout(() => $("term-input").focus(), 50);
+}
+
+$("term-btn").addEventListener("click", openTermView);
+$("term-close-btn").addEventListener("click", () => {
+  $("term-view").classList.add("hidden");
+  showWorkspaceView();
+});
+$("term-clear-btn").addEventListener("click", () => ($("term-output").innerHTML = ""));
+$("term-restart-btn").addEventListener("click", () => {
+  state.ws?.send(JSON.stringify({ type: "term-close" }));
+  setTimeout(() => {
+    state.ws?.send(JSON.stringify({ type: "term-open" }));
+    termAppend("[已重启 shell]\n", "sys");
+  }, 200);
+});
+
+$("term-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const input = $("term-input");
+  const cmd = input.value;
+  if (!cmd.trim()) return;
+  state.term.history.push(cmd);
+  state.term.histIdx = state.term.history.length;
+  termAppend(`$ ${cmd}\n`, "sys");
+  if (state.ws?.readyState === 1) state.ws.send(JSON.stringify({ type: "term-input", text: cmd }));
+  input.value = "";
+});
+
+$("term-input").addEventListener("keydown", (e) => {
+  const h = state.term.history;
+  if (e.key === "ArrowUp" && h.length) {
+    e.preventDefault();
+    state.term.histIdx = Math.max(0, (state.term.histIdx < 0 ? h.length : state.term.histIdx) - 1);
+    $("term-input").value = h[state.term.histIdx] || "";
+  } else if (e.key === "ArrowDown" && h.length) {
+    e.preventDefault();
+    state.term.histIdx = Math.min(h.length, state.term.histIdx + 1);
+    $("term-input").value = h[state.term.histIdx] || "";
+  } else if (e.ctrlKey && e.key.toLowerCase() === "c") {
+    e.preventDefault();
+    state.ws?.send(JSON.stringify({ type: "term-signal" }));
+    termAppend("^C\n", "sys");
+  }
+});
 
 // ===== 会话搜索 =====
 // 侧栏顶部搜索框：防抖 400ms、关键词 ≥2 字符；点击结果打开会话，

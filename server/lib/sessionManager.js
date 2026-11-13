@@ -15,9 +15,11 @@ const IDLE_KILL_MS = Number(process.env.PI_IDLE_KILL_MS || 30 * 60 * 1000);
 const MAX_CONCURRENT = Number(process.env.PI_MAX_CONCURRENT || 4);
 
 export class SessionManager {
-  constructor(projectsPath, sessionDir) {
+  constructor(projectsPath, sessionDir, options = {}) {
     this.projectsPath = projectsPath;
     this.sessionDir = sessionDir;
+    /** 默认模型提供器（新建会话时用）：() => {provider, id} | null */
+    this.getDefaultModel = options.getDefaultModel || (() => null);
     this.projects = readJson(projectsPath, []);
     /** 会话元数据（归档标记等）：{ [sessionFile]: {archived?: boolean} }。不写 pi 的 jsonl，用侧文件。 */
     this.metaPath = join(sessionDir, "..", "session-meta.json");
@@ -244,7 +246,14 @@ export class SessionManager {
       return { key, state };
     }
 
-    proc = new PiProcess({ cwd: project.path, sessionFile, sessionDir: this.sessionDir, name });
+    proc = new PiProcess({
+      cwd: project.path,
+      sessionFile,
+      sessionDir: this.sessionDir,
+      name,
+      // 只有新会话（未带 sessionFile）才套默认模型；历史会话保留自身模型
+      model: sessionFile ? null : this.getDefaultModel(),
+    });
     this.processes.set(key, proc);
     this._enforceLimit(key); // 新增进程后按 LRU 挂起多余的非流式进程
     proc.on("event", (record) => {
